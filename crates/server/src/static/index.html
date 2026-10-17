@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PS Remote Play</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2310131a'/%3E%3Cpath d='M11 9.5v13l11-6.5z' fill='%234f8df7'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <h1>PS Remote Play</h1>
+  </div>
+  <div class="topbar-right">
+    <span id="conn-status" class="status-pill">Idle</span>
+    <span id="stats" class="stats"></span>
+  </div>
+</header>
+
+<main class="layout">
+  <aside class="sidebar">
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Consoles</h2>
+        <button id="discover-btn" class="ghost small" type="button">Scan</button>
+      </div>
+      <div id="hosts" class="host-list">
+        <p class="empty">No consoles registered yet.</p>
+      </div>
+      <button id="demo-btn" class="ghost small hidden" type="button" style="margin-top:10px">Start demo stream</button>
+    </section>
+
+    <section class="panel">
+      <details id="register-panel">
+        <summary><h2>Register a console</h2></summary>
+        <form id="register-form" autocomplete="off">
+          <label>Console IP / hostname
+            <input id="reg-host" name="host" placeholder="192.168.1.50" required>
+          </label>
+          <label>Console type
+            <select id="reg-target" name="target">
+              <option value="ps5_1" selected>PS5</option>
+              <option value="ps4_10">PS4 (8.0+)</option>
+              <option value="ps4_9">PS4 (7.0)</option>
+              <option value="ps4_8">PS4 (older)</option>
+            </select>
+          </label>
+          <label for="reg-pin">PIN shown on console</label>
+          <div class="inline-row">
+            <input id="reg-pin" name="pin" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="12345678" required>
+            <button id="reg-pin-clear" class="ghost small" type="button">Clear</button>
+          </div>
+          <label>PSN Account ID
+            <input id="reg-account" name="psn_account_id" placeholder="1234567890123456789" spellcheck="false">
+          </label>
+          <div class="psn-helper">
+            <p class="hint">Only have a PSN username? <a id="psn-login-link" href="#" target="_blank" rel="noopener">Sign in to PSN</a>, then copy the URL from the address bar after the redirect page and paste it below.</p>
+            <div class="inline-row">
+              <input id="psn-redirect" placeholder="Redirect URL containing ?code=…" spellcheck="false">
+              <button id="psn-resolve-btn" class="ghost small" type="button">Get ID</button>
+            </div>
+          </div>
+          <label>PSN Online ID (PS4 pre-7.0 only)
+            <input id="reg-online" name="psn_online_id" placeholder="Online ID">
+          </label>
+          <label>Label (optional)
+            <input id="reg-name" name="name" placeholder="Living room PS5">
+          </label>
+          <label class="check">
+            <input id="reg-broadcast" type="checkbox" name="broadcast">
+            Search by broadcast (if the console rejects a direct request)
+          </label>
+          <button id="register-btn" class="primary" type="submit">Register</button>
+          <p id="reg-hint" class="hint">Enter the numeric Account ID, hex, or a base64 value; it is converted automatically. If you only know your PSN username, use the sign-in helper above.</p>
+        </form>
+      </details>
+    </section>
+
+    <section id="discovered-panel" class="panel hidden">
+      <h2>Found on network</h2>
+      <div id="discovered" class="host-list"></div>
+    </section>
+  </aside>
+
+  <section class="stage">
+    <div id="video-wrap" class="video-wrap">
+      <video id="video" autoplay playsinline></video>
+      <canvas id="video-sharp" class="video-sharp hidden" aria-hidden="true"></canvas>
+      <div id="video-overlay" class="video-overlay">
+        <div class="overlay-card">
+          <p class="eyebrow">Remote Play</p>
+          <h3 id="overlay-title">Select a console to begin</h3>
+          <p id="overlay-text" class="muted">Registration pairs this browser bridge with your PS4 or PS5.</p>
+          <button id="overlay-action" class="primary hidden" type="button">Start</button>
+        </div>
+      </div>
+      <div id="hint" class="hint-overlay hidden">Click the video to capture the mouse · Esc releases</div>
+    </div>
+
+    <div class="controls">
+      <label>Resolution
+        <select id="opt-resolution">
+          <option value="1080p" selected>1080p</option>
+          <option value="720p">720p</option>
+          <option value="540p">540p</option>
+          <option value="360p">360p</option>
+        </select>
+      </label>
+      <label>FPS
+        <select id="opt-fps">
+          <option value="60" selected>60</option>
+          <option value="30">30</option>
+        </select>
+      </label>
+      <label>Bitrate (kbps)
+        <input id="opt-bitrate" type="number" min="100" max="100000" placeholder="auto"
+               title="Higher bitrates preserve more detail and motion. 20000–30000 often helps 1080p.">
+      </label>
+      <label class="sharp">Sharpness
+        <span class="sharp-row">
+          <input id="opt-sharpness" type="range" min="0" max="100" step="5" value="35">
+          <span id="sharpness-value" class="muted">35</span>
+        </span>
+      </label>
+      <label class="check" title="Experimental. Known to make the PS5 Remote Play server crash after repeated sessions.">
+        <input id="opt-dualsense" type="checkbox">
+        DualSense feedback (experimental)
+      </label>
+      <button id="stop-btn" class="danger" type="button" disabled>Stop</button>
+      <button id="fullscreen-btn" class="ghost" type="button">Fullscreen</button>
+    </div>
+
+    <details class="legend">
+      <summary>Controls</summary>
+      <div class="legend-grid">
+        <span><kbd>WASD</kbd> left stick</span>
+        <span><kbd>Mouse</kbd> right stick (captured)</span>
+        <span><kbd>Left click</kbd> R2</span>
+        <span><kbd>Right click</kbd> L2</span>
+        <span><kbd>Space</kbd> Cross</span>
+        <span><kbd>J</kbd> Moon</span>
+        <span><kbd>K</kbd> Box</span>
+        <span><kbd>L</kbd> Pyramid</span>
+        <span><kbd>Arrows</kbd> D-pad</span>
+        <span><kbd>Q / E</kbd> L1 / R1</span>
+        <span><kbd>Z / C</kbd> L2 / R2</span>
+        <span><kbd>Tab</kbd> Touchpad</span>
+        <span><kbd>Enter</kbd> Options</span>
+        <span><kbd>Backspace</kbd> Share</span>
+        <span><kbd>F / G</kbd> L3 / R3</span>
+      </div>
+      <p class="hint">A standard gamepad (Xbox, DualShock, DualSense) is used automatically. On touch screens, touching the video drives the touchpad.</p>
+    </details>
+  </section>
+</main>
+
+<div id="pin-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="pin-title">
+  <div class="modal-card">
+    <p class="eyebrow">Console login</p>
+    <h2 id="pin-title">Enter the PIN</h2>
+    <p id="pin-text" class="muted">The console is asking for its login PIN. Enter the PIN shown on your console.</p>
+    <form id="pin-form">
+      <input id="pin-input" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="PIN" autocomplete="off" required>
+      <button id="pin-clear" class="ghost small" type="button">Clear</button>
+      <button class="primary" type="submit">Send PIN</button>
+    </form>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

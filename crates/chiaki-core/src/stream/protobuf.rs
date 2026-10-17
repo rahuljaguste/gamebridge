@@ -1,0 +1,265 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+//! Encoding/decoding of the Takion protobuf payloads we exchange.
+
+use crate::error::{Error, Result};
+use crate::proto::{Reader, Value, Writer, as_bool, as_bytes, as_string, as_u32};
+
+pub const TYPE_BIG: u32 = 0;
+pub const TYPE_BANG: u32 = 1;
+pub const TYPE_HEARTBEAT: u32 = 3;
+pub const TYPE_CORRUPTFRAME: u32 = 5;
+pub const TYPE_DISCONNECT: u32 = 8;
+pub const TYPE_STREAMINFO: u32 = 13;
+pub const TYPE_STREAMINFOACK: u32 = 14;
+pub const TYPE_CONTROLLERCONNECTION: u32 = 21;
+
+pub const CONTROLLER_TYPE_DUALSHOCK4: u32 = 2;
+pub const CONTROLLER_TYPE_DUALSENSE: u32 = 6;
+
+#[derive(Debug, Clone)]
+pub struct Bang {
+    pub version_accepted: bool,
+    pub encrypted_key_accepted: bool,
+    pub ecdh_pub_key: Vec<u8>,
+    pub ecdh_sig: Vec<u8>,
+    pub server_version: Option<u32>,
+    pub session_key: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct VideoResolutionInfo {
+    pub width: u32,
+    pub height: u32,
+    pub header: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StreamInfo {
+    pub resolutions: Vec<VideoResolutionInfo>,
+    pub audio_header: Vec<u8>,
+}
+
+pub fn encode_big(
+    client_version: u32,
+    session_key: &str,
+    launch_spec: &str,
+    ecdh_pub_key: &[u8],
+    ecdh_sig: &[u8],
+) -> Vec<u8> {
+    let mut payload = Writer::new();
+    payload.uint32(1, client_version);
+    payload.string(2, session_key);
+    payload.string(3, launch_spec);
+    payload.bytes(4, &[0, 0, 0, 0]);
+    payload.bytes(5, ecdh_pub_key);
+    payload.bytes(6, ecdh_sig);
+
+    let mut msg = Writer::new();
+    msg.uint32(1, TYPE_BIG);
+    msg.bytes(2, &payload.finish());
+    msg.finish()
+}
+
+pub fn encode_controller_connection(dualsense: bool) -> Vec<u8> {
+    let mut payload = Writer::new();
+    payload.bool(2, true);
+    payload.uint32(
+        3,
+        if dualsense {
+            CONTROLLER_TYPE_DUALSENSE
+        } else {
+            CONTROLLER_TYPE_DUALSHOCK4
+        },
+    );
+    let mut msg = Writer::new();
+    msg.uint32(1, TYPE_CONTROLLERCONNECTION);
+    msg.bytes(22, &payload.finish());
+    msg.finish()
+}
+
+pub fn encode_streaminfo_ack() -> Vec<u8> {
+    let mut msg = Writer::new();
+    msg.uint32(1, TYPE_STREAMINFOACK);
+    msg.finish()
+}
+
+pub fn encode_heartbeat() -> Vec<u8> {
+    let mut msg = Writer::new();
+    msg.uint32(1, TYPE_HEARTBEAT);
+    msg.finish()
+}
+
+pub fn encode_disconnect(reason: &str) -> Vec<u8> {
+    let mut payload = Writer::new();
+    payload.string(1, reason);
+    let mut msg = Writer::new();
+    msg.uint32(1, TYPE_DISCONNECT);
+    msg.bytes(10, &payload.finish());
+    msg.finish()
+}
+
+pub fn encode_corrupt_frame(start: u16, end: u16) -> Vec<u8> {
+    let mut payload = Writer::new();
+    payload.uint32(1, start as u32);
+    payload.uint32(2, end as u32);
+    let mut msg = Writer::new();
+    msg.uint32(1, TYPE_CORRUPTFRAME);
+    msg.bytes(6, &payload.finish());
+    msg.finish()
+}
+
+pub fn message_type(buf: &[u8]) -> Result<u32> {
+    let mut r = Reader::new(buf);
+    while let Some((field, value)) = r.next_field()? {
+        if field == 1 {
+            return as_u32(value);
+        }
+    }
+    Err(Error::InvalidData)
+}
+
+pub fn parse_bang(buf: &[u8]) -> Result<Bang> {
+    let mut outer = Reader::new(buf);
+    let mut payload = None;
+    while let Some((field, value)) = outer.next_field()? {
+        match field {
+            1 => {
+                if as_u32(value)? != TYPE_BANG {
+                    return Err(Error::InvalidData);
+                }
+            }
+            3 => payload = Some(as_bytes(value)?.to_vec()),
+            _ => {}
+        }
+    }
+    let payload = payload.ok_or(Error::InvalidData)?;
+    let mut r = Reader::new(&payload);
+    let mut bang = Bang {
+        version_accepted: false,
+        encrypted_key_accepted: false,
+        ecdh_pub_key: Vec::new(),
+        ecdh_sig: Vec::new(),
+        server_version: None,
+        session_key: None,
+    };
+    while let Some((field, value)) = r.next_field()? {
+        match field {
+            1 => bang.server_version = Some(as_u32(value)?),
+            3 => bang.encrypted_key_accepted = as_bool(value)?,
+            4 => bang.version_accepted = as_bool(value)?,
+            5 => bang.session_key = Some(as_string(value)?),
+            8 => bang.ecdh_pub_key = as_bytes(value)?.to_vec(),
+            9 => bang.ecdh_sig = as_bytes(value)?.to_vec(),
+            _ => {}
+        }
+    }
+    Ok(bang)
+}
+
+pub fn parse_stream_info(buf: &[u8]) -> Result<StreamInfo> {
+    let mut outer = Reader::new(buf);
+    let mut payload = None;
+    while let Some((field, value)) = outer.next_field()? {
+        match field {
+            1 => {
+                if as_u32(value)? != TYPE_STREAMINFO {
+                    return Err(Error::InvalidData);
+                }
+            }
+            15 => payload = Some(as_bytes(value)?.to_vec()),
+            _ => {}
+        }
+    }
+    let payload = payload.ok_or(Error::InvalidData)?;
+    let mut r = Reader::new(&payload);
+    let mut resolutions = Vec::new();
+    let mut audio_header = Vec::new();
+    while let Some((field, value)) = r.next_field()? {
+        match field {
+            1 => {
+                let bytes = as_bytes(value)?;
+                resolutions.push(parse_resolution(bytes)?);
+            }
+            2 => audio_header = as_bytes(value)?.to_vec(),
+            _ => {}
+        }
+    }
+    if audio_header.len() != 0xe {
+        return Err(Error::InvalidData);
+    }
+    Ok(StreamInfo {
+        resolutions,
+        audio_header,
+    })
+}
+
+fn parse_resolution(buf: &[u8]) -> Result<VideoResolutionInfo> {
+    let mut r = Reader::new(buf);
+    let mut width = 0;
+    let mut height = 0;
+    let mut header = Vec::new();
+    while let Some((field, value)) = r.next_field()? {
+        match field {
+            1 => width = as_u32(value)?,
+            2 => height = as_u32(value)?,
+            3 => header = as_bytes(value)?.to_vec(),
+            _ => {}
+        }
+    }
+    Ok(VideoResolutionInfo {
+        width,
+        height,
+        header,
+    })
+}
+
+pub fn parse_disconnect_reason(buf: &[u8]) -> Result<Option<String>> {
+    let mut outer = Reader::new(buf);
+    let mut payload = None;
+    let mut ty = None;
+    while let Some((field, value)) = outer.next_field()? {
+        match field {
+            1 => ty = Some(as_u32(value)?),
+            10 => payload = Some(as_bytes(value)?.to_vec()),
+            _ => {}
+        }
+    }
+    if ty != Some(TYPE_DISCONNECT) {
+        return Ok(None);
+    }
+    let Some(payload) = payload else {
+        return Ok(Some(String::new()));
+    };
+    let mut r = Reader::new(&payload);
+    while let Some((field, value)) = r.next_field()? {
+        if field == 1 {
+            return Ok(Some(as_string(value)?));
+        }
+    }
+    Ok(Some(String::new()))
+}
+
+/// Rumble payloads are not protobuf; they have three direct bytes.
+pub fn parse_rumble(buf: &[u8]) -> Option<(u8, u8, u8)> {
+    (buf.len() >= 3).then(|| (buf[0], buf[1], buf[2]))
+}
+
+pub fn parse_trigger_effects(buf: &[u8]) -> Option<([u8; 10], [u8; 10], u8, u8)> {
+    if buf.len() < 25 {
+        return None;
+    }
+    let mut left = [0u8; 10];
+    let mut right = [0u8; 10];
+    left.copy_from_slice(&buf[5..15]);
+    right.copy_from_slice(&buf[15..25]);
+    Some((left, right, buf[1], buf[2]))
+}
+
+/// Helper used by tests and diagnostics.
+pub fn first_varint(buf: &[u8]) -> Result<u32> {
+    let mut r = Reader::new(buf);
+    match r.next_field()? {
+        Some((1, Value::Varint(v))) => Ok(v as u32),
+        _ => Err(Error::InvalidData),
+    }
+}

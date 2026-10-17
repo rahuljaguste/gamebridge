@@ -1,0 +1,36 @@
+[package]
+name = "ps-remoteplay-server"
+description = "Browser bridge for PlayStation Remote Play"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "ps-remoteplay"
+path = "src/main.rs"
+
+[dependencies]
+chiaki-core = { path = "../chiaki-core" }
+axum = { version = "0.8.9", features = ["ws"] }
+tokio = { version = "1.47", features = ["rt-multi-thread", "net", "time", "sync", "macros", "signal", "fs", "io-util"] }
+tower-http = { version = "0.6.6", features = ["trace"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4.5", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+uuid = { version = "1", features = ["v4"] }
+webrtc = "=0.21.1"
+rtc = "=0.21.1"
+if-addrs = "0.15"
+futures-util = "0.3"
+rand = "0.8"
+dirs = "6"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+url = "2"
+hex = "0.4"
+bytes = "1"
+async-trait = "0.1"
+tokio-util = { version = "0.7", features = ["rt"] }
