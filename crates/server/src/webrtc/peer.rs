@@ -41,6 +41,11 @@ fn runtime() -> Result<Arc<dyn Runtime>> {
         .clone())
 }
 
+/// ICE gathers on loopback plus every non-loopback IPv4 interface. The HTTP UI
+/// is loopback-only, so the offer SDP (and these candidates) cannot be obtained
+/// from another host today. Advertising LAN candidates is deliberate: the SDP
+/// can be handed to a browser on another machine if the UI is exposed later.
+/// Revisit this if non-local access is ever enabled without authentication.
 fn udp_addrs() -> Vec<String> {
     let mut out = vec!["127.0.0.1:0".to_string()];
     if let Ok(ifaces) = if_addrs::get_if_addrs() {

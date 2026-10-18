@@ -31,6 +31,11 @@ const POSTPONE_MAX: usize = 32;
 const DATA_QUEUE_EXP: u8 = 4; // 16 entries
 const SEND_BUFFER_SIZE: usize = 16; // matches TAKION_SEND_BUFFER_SIZE
 const RECV_BUFFER_SIZE: usize = 65535;
+/// Stream-control messages (corrupt-frame reports and IDR requests) use chunk
+/// flags 1 and channel 2. Swapping these makes the console silently ignore
+/// frame-loss reports.
+const STREAM_CONTROL_FLAGS: u8 = 1;
+const STREAM_CONTROL_CHANNEL: u16 = 2;
 
 #[derive(Debug, Clone)]
 pub struct TakionConnectInfo {
@@ -66,6 +71,8 @@ pub enum TakionCommand {
         start: u16,
         end: u16,
     },
+    /// Ask the console for an immediate IDR (Takion payload type 25).
+    RequestIdr,
     SetCrypt {
         local: Box<GKCrypt>,
         remote: Box<GKCrypt>,
@@ -75,10 +82,8 @@ pub enum TakionCommand {
 
 #[derive(Debug)]
 pub enum TakionEvent {
-    Connected,
     Disconnected,
     MessageData { data_type: u8, payload: Bytes },
-    DataAck { seq: u32 },
     Av { packet: AvPacket, data: Bytes },
 }
 
@@ -234,6 +239,13 @@ impl State {
             packet[5..9].copy_from_slice(&tag);
         }
         Ok(packet)
+    }
+
+    /// Build a stream-control DATA message (CORRUPTFRAME / IDRREQUEST).
+    /// Chiaki sends these on chunk flags 1 and channel 2; centralizing it here
+    /// prevents the two call sites from drifting apart again.
+    fn build_stream_control(&mut self, payload: &[u8]) -> Result<Vec<u8>> {
+        self.build_message_data(STREAM_CONTROL_FLAGS, STREAM_CONTROL_CHANNEL, payload)
     }
 
     /// Build a continuation chunk of a fragmented DATA message. Unlike a
@@ -526,7 +538,6 @@ pub async fn connect(addr: SocketAddr, info: TakionConnectInfo) -> Result<Takion
         postponed: Vec::new(),
         pending_ack: None,
     };
-    let _ = evt_tx.send(TakionEvent::Connected);
 
     let task_cancel = cancel.clone();
     let join = tokio::spawn(run(sock, state, cmd_rx, evt_tx, task_cancel));
@@ -664,8 +675,16 @@ async fn handle_command(
         }
         TakionCommand::SendCorruptFrame { start, end } => {
             let payload = crate::stream::protobuf::encode_corrupt_frame(start, end);
-            if let Ok(packet) = state.build_message_data(2, 1, &payload) {
-                let _ = sock.send(&packet).await;
+            let packet = state.build_stream_control(&payload);
+            if !send_data_packet(sock, state, packet, STREAM_CONTROL_CHANNEL).await {
+                tracing::warn!("takion: corrupt-frame report send failed");
+            }
+        }
+        TakionCommand::RequestIdr => {
+            let payload = crate::stream::protobuf::encode_idr_request();
+            let packet = state.build_stream_control(&payload);
+            if !send_data_packet(sock, state, packet, STREAM_CONTROL_CHANNEL).await {
+                tracing::warn!("takion: IDR request send failed");
             }
         }
         TakionCommand::SetCrypt { local, remote } => {
@@ -771,8 +790,6 @@ async fn handle_datagram(
                         return Err(Error::InvalidData);
                     }
                     let cumulative = u32::from_be_bytes(payload[0..4].try_into().unwrap());
-                    let a_rwnd = u32::from_be_bytes(payload[4..8].try_into().unwrap());
-                    let _ = a_rwnd;
                     let before = state.send_buffer.len();
                     state.send_buffer.ack(cumulative);
                     // Before encryption is installed the only buffered packet
@@ -821,9 +838,8 @@ async fn handle_datagram(
 mod format_tests {
     use super::*;
 
-    #[test]
-    fn continuation_data_header_has_no_type_byte() {
-        let mut state = State {
+    fn test_state() -> State {
+        State {
             version: 9,
             enable_crypt: false,
             tag_local: 0,
@@ -840,7 +856,12 @@ mod format_tests {
             send_buffer: SendBuffer::new(SEND_BUFFER_SIZE),
             postponed: Vec::new(),
             pending_ack: None,
-        };
+        }
+    }
+
+    #[test]
+    fn continuation_data_header_has_no_type_byte() {
+        let mut state = test_state();
         let payload = [0xde, 0xad, 0xbe, 0xef];
         let packet = state.build_message_data_cont(0, 1, &payload).unwrap();
         assert_eq!(packet.len(), 1 + MESSAGE_HEADER_SIZE + 8 + payload.len());
@@ -860,6 +881,18 @@ mod format_tests {
     }
 
     #[test]
+    fn stream_control_messages_use_flags_one_channel_two() {
+        let mut state = test_state();
+        let payload = crate::stream::protobuf::encode_idr_request();
+        let packet = state.build_stream_control(&payload).unwrap();
+        assert_eq!(packet[0], PACKET_TYPE_CONTROL);
+        assert_eq!(packet[13], CHUNK_TYPE_DATA);
+        assert_eq!(packet[14], STREAM_CONTROL_FLAGS);
+        assert_eq!(&packet[21..23], &STREAM_CONTROL_CHANNEL.to_be_bytes());
+        assert_eq!(&packet[26..], &payload);
+    }
+
+    #[test]
     fn congestion_mac_vector() {
         let handshake = [
             0x54, 0x65, 0x4c, 0x34, 0x5c, 0xac, 0x56, 0xb8, 0xea, 0xe6, 0x15, 0x2a, 0xde, 0x1c,
@@ -870,24 +903,11 @@ mod format_tests {
             0x11, 0xce, 0x4f, 0x02, 0xb1, 0xce, 0x1e, 0xe7, 0xc3, 0x8d, 0x54, 0x39, 0xfa, 0x64,
             0xe3, 0xdb, 0xd8, 0x0d,
         ];
-        let mut state = State {
-            version: 9,
-            enable_crypt: true,
-            tag_local: 0,
-            tag_remote: 0,
-            key_state: KeyState::new(),
-            gkcrypt_local: Some(GKCrypt::new(2, &handshake, &secret).unwrap()),
-            gkcrypt_remote: None,
-            key_pos_local: 0,
-            seq_num_local: 0,
-            a_rwnd: A_RWND,
-            data_queue: ReorderQueue::new(DATA_QUEUE_EXP, 0),
-            data_seen: false,
-            ack_logs: 0,
-            send_buffer: SendBuffer::new(SEND_BUFFER_SIZE),
-            postponed: Vec::new(),
-            pending_ack: None,
-        };
+        let mut state = test_state();
+        state.enable_crypt = true;
+        state.tag_remote = 0;
+        state.seq_num_local = 0;
+        state.gkcrypt_local = Some(GKCrypt::new(2, &handshake, &secret).unwrap());
         let mut buf = [0u8; CONGESTION_PACKET_SIZE];
         format_congestion(
             &mut buf,

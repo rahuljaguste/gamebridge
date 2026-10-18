@@ -355,6 +355,7 @@ async fn udp_console(udp: UdpSocket, _crypt: RPCrypt) {
         &stream_info,
     );
     local_key_pos += stream_info.len() as u64;
+    local_seq += 1;
     udp.send(&packet).await.unwrap();
 
     // Stream info ack.
@@ -378,6 +379,20 @@ async fn udp_console(udp: UdpSocket, _crypt: RPCrypt) {
     )
     .await
     .expect("controller connection");
+
+    // Console connection quality report.
+    let quality = encode_connection_quality(0.0125);
+    let packet = build_control_data(
+        client_tag,
+        Some(&mut local_crypt),
+        local_key_pos,
+        local_seq,
+        1,
+        1,
+        &quality,
+    );
+    local_key_pos += quality.len() as u64;
+    udp.send(&packet).await.unwrap();
 
     // Video frame.
     let video = build_video_packet(&mut local_crypt, 0, local_key_pos, &au);
@@ -457,6 +472,15 @@ fn encode_bang(pubkey: &[u8; 65], sig: &[u8; 32], session_key: &str) -> Vec<u8> 
     let mut msg = Writer::new();
     msg.uint32(1, protobuf::TYPE_BANG);
     msg.bytes(3, &payload.finish());
+    msg.finish()
+}
+
+fn encode_connection_quality(rtt: f64) -> Vec<u8> {
+    let mut payload = vec![0x29]; // field 5, wire type 1 (double)
+    payload.extend_from_slice(&rtt.to_le_bytes());
+    let mut msg = Writer::new();
+    msg.uint32(1, protobuf::TYPE_CONNECTIONQUALITY);
+    msg.bytes(17, &payload);
     msg.finish()
 }
 
@@ -548,9 +572,11 @@ async fn mock_console_pipeline() {
     let event_task = tokio::spawn(async move {
         let mut kinds = Vec::new();
         let mut pin_incorrect = Vec::new();
+        let mut latencies = Vec::new();
         while let Some(event) = events.recv().await {
             match &event {
                 SessionEvent::Connected => kinds.push("connected"),
+                SessionEvent::ConnectionQuality { rtt_ms } => latencies.push(*rtt_ms),
                 SessionEvent::StreamInfo { .. } => kinds.push("stream_info"),
                 SessionEvent::LoginPinRequest { incorrect } => {
                     kinds.push("pin_request");
@@ -563,7 +589,7 @@ async fn mock_console_pipeline() {
                 _ => {}
             }
         }
-        (kinds, pin_incorrect)
+        (kinds, pin_incorrect, latencies)
     });
 
     let frame = timeout(Duration::from_secs(10), video.recv())
@@ -585,7 +611,7 @@ async fn mock_console_pipeline() {
         .await
         .expect("outcome timeout");
     assert_eq!(outcome.reason(), QuitReason::Stopped);
-    let (kinds, pin_incorrect) = timeout(Duration::from_secs(3), event_task)
+    let (kinds, pin_incorrect, latencies) = timeout(Duration::from_secs(3), event_task)
         .await
         .unwrap()
         .unwrap();
@@ -595,6 +621,10 @@ async fn mock_console_pipeline() {
         pin_incorrect,
         [false, true],
         "wrong PIN must re-open the PIN prompt"
+    );
+    assert!(
+        latencies.iter().any(|rtt| (*rtt - 12.5).abs() < 1e-6),
+        "console quality must surface as normalized latency: {latencies:?}"
     );
 
     session.stop().await;

@@ -2,17 +2,19 @@
 //! HTTP and WebSocket routes.
 
 pub mod api;
+mod guard;
 pub mod static_files;
 pub mod ws;
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::Router;
 use axum::routing::{delete, get, post};
+use axum::{Router, middleware};
 
 use crate::state::AppState;
 
-pub fn router(state: Arc<AppState>) -> Router {
+pub fn router(state: Arc<AppState>, bind: SocketAddr, allow_remote: bool) -> Router {
     Router::new()
         .route("/", get(static_files::index))
         .route("/app.js", get(static_files::app_js))
@@ -30,5 +32,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/status", get(api::status))
         .route("/api/session/ws", get(ws::ws_handler))
         .route("/api/demo/start", post(crate::demo::start))
+        .layer(middleware::from_fn_with_state(
+            guard::LocalOnly::new(bind, allow_remote),
+            guard::local_only,
+        ))
         .with_state(state)
 }

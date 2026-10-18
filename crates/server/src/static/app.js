@@ -28,6 +28,21 @@ const overlayText = $("overlay-text");
 const hintOverlay = $("hint");
 const statusPill = $("conn-status");
 const statsEl = $("stats");
+
+let consoleLatencyMs = null;
+let packetCount = { received: 0, lost: 0 };
+
+function renderStats() {
+  const parts = [];
+  if (Number.isFinite(consoleLatencyMs)) {
+    const ms = consoleLatencyMs < 10
+      ? consoleLatencyMs.toFixed(1)
+      : Math.round(consoleLatencyMs);
+    parts.push(`${ms} ms`);
+  }
+  parts.push(`${packetCount.received} pkts`, `${packetCount.lost} lost`);
+  statsEl.textContent = parts.join(" · ");
+}
 const hostsEl = $("hosts");
 const discoveredEl = $("discovered");
 const discoveredPanel = $("discovered-panel");
@@ -50,36 +65,408 @@ const state = {
   touchSeq: 1,
   padIndex: null,
   streaming: false,
+  detachedActive: false,
 };
+let detachedTimer = null;
 
-/* ── Sharpening (WebGL2 CAS-style pass) ───────────────────────────────── */
+/* ── Sharpening: FSR 1 EASU upscale + gamma-aware RCAS ──────────────────
+ * EASU and RCAS are ported from AMD FidelityFX Super Resolution 1.0
+ * (Copyright (c) 2021 Advanced Micro Devices, Inc.; MIT licence, see
+ * THIRD_PARTY_NOTICES.md). EASU reconstructs the video at the display's
+ * native pixel grid; RCAS then sharpens in linear light.
+ */
 
 const sharpCanvas = $("video-sharp");
 const sharpnessInput = $("opt-sharpness");
 const sharpnessValue = $("sharpness-value");
+const brightnessInput = $("opt-brightness");
+const brightnessValue = $("brightness-value");
+const contrastInput = $("opt-contrast");
+const contrastValue = $("contrast-value");
+const saturationInput = $("opt-saturation");
+const saturationValue = $("saturation-value");
+const pictureReset = $("picture-reset");
+
+// The HTML carries the initial slider positions; keep one source of truth.
+// The defaults are deliberately a mild "vivid" grade; zero every picture
+// control to bypass the post-process.
+// defaultValue avoids browser form restoration affecting the reset target.
+const PICTURE_DEFAULTS = {
+  sharpness: parseInt(sharpnessInput.defaultValue, 10),
+  brightness: parseInt(brightnessInput.defaultValue, 10),
+  contrast: parseInt(contrastInput.defaultValue, 10),
+  saturation: parseInt(saturationInput.defaultValue, 10),
+};
+
+// Cap the post-process target. 4K is crisp on high-DPI displays without
+// making integrated GPUs chew through an 8K EASU/RCAS pass at 60 fps.
+const SHARP_MAX_PIXELS = 3840 * 2160;
+
+const FULLSCREEN_VS = `#version 300 es
+  void main() {
+    vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+  }`;
+
+const EASU_FS = `#version 300 es
+  precision highp float;
+  precision highp int;
+
+  uniform sampler2D u_tex;
+  uniform ivec2 u_in_size;
+  uniform vec4 u_con0;
+
+  out vec4 o_color;
+
+  vec4 fetch(ivec2 p) {
+    return texelFetch(u_tex, clamp(p, ivec2(0), u_in_size - 1), 0);
+  }
+
+  float luma2(vec4 c) {
+    return c.b * 0.5 + (c.r * 0.5 + c.g);
+  }
+
+  float sat1(float x) { return clamp(x, 0.0, 1.0); }
+  float rcp_lo(float a) { return uintBitsToFloat(0x7ef07ebbu - floatBitsToUint(a)); }
+  float rsq_lo(float a) { return uintBitsToFloat(0x5f347d74u - (floatBitsToUint(a) >> 1u)); }
+
+  void easu_set(inout vec2 dir, inout float len, vec2 pp,
+                bool biS, bool biT, bool biU, bool biV,
+                float lA, float lB, float lC, float lD, float lE) {
+    float w = 0.0;
+    if (biS) w = (1.0 - pp.x) * (1.0 - pp.y);
+    if (biT) w = pp.x * (1.0 - pp.y);
+    if (biU) w = (1.0 - pp.x) * pp.y;
+    if (biV) w = pp.x * pp.y;
+
+    float dc = lD - lC;
+    float cb = lC - lB;
+    float lenX = max(abs(dc), abs(cb));
+    lenX = rcp_lo(lenX);
+    float dirX = lD - lB;
+    dir.x += dirX * w;
+    lenX = sat1(abs(dirX) * lenX);
+    lenX *= lenX;
+    len += lenX * w;
+
+    float ec = lE - lC;
+    float ca = lC - lA;
+    float lenY = max(abs(ec), abs(ca));
+    lenY = rcp_lo(lenY);
+    float dirY = lE - lA;
+    dir.y += dirY * w;
+    lenY = sat1(abs(dirY) * lenY);
+    lenY *= lenY;
+    len += lenY * w;
+  }
+
+  void easu_tap(inout vec3 aC, inout float aW, vec2 off, vec2 dir, vec2 len,
+                float lob, float clp, vec3 c) {
+    vec2 v;
+    v.x = off.x * dir.x + off.y * dir.y;
+    v.y = off.x * (-dir.y) + off.y * dir.x;
+    v *= len;
+    float d2 = v.x * v.x + v.y * v.y;
+    d2 = min(d2, clp);
+    float wB = (2.0 / 5.0) * d2 - 1.0;
+    float wA = lob * d2 - 1.0;
+    wB *= wB;
+    wA *= wA;
+    wB = (25.0 / 16.0) * wB - (25.0 / 16.0 - 1.0);
+    float w = wB * wA;
+    aC += c * w;
+    aW += w;
+  }
+
+  void main() {
+    ivec2 ip = ivec2(gl_FragCoord.xy);
+
+    vec2 pp = vec2(ip) * u_con0.xy + u_con0.zw;
+    vec2 fp = floor(pp);
+    pp -= fp;
+    ivec2 fpi = ivec2(fp);
+
+    // The 12-tap EASU kernel. These are the same texels AMD's gather4
+    // path reads; WebGL2 has no textureGather, so fetch them directly.
+    vec4 b = fetch(fpi + ivec2( 0, -1));
+    vec4 c = fetch(fpi + ivec2( 1, -1));
+    vec4 e = fetch(fpi + ivec2(-1,  0));
+    vec4 f = fetch(fpi + ivec2( 0,  0));
+    vec4 g = fetch(fpi + ivec2( 1,  0));
+    vec4 h = fetch(fpi + ivec2( 2,  0));
+    vec4 i = fetch(fpi + ivec2(-1,  1));
+    vec4 j = fetch(fpi + ivec2( 0,  1));
+    vec4 k = fetch(fpi + ivec2( 1,  1));
+    vec4 l = fetch(fpi + ivec2( 2,  1));
+    vec4 n = fetch(fpi + ivec2( 0,  2));
+    vec4 o = fetch(fpi + ivec2( 1,  2));
+
+    float bL = luma2(b), cL = luma2(c);
+    float eL = luma2(e), fL = luma2(f), gL = luma2(g), hL = luma2(h);
+    float iL = luma2(i), jL = luma2(j), kL = luma2(k), lL = luma2(l);
+    float nL = luma2(n), oL = luma2(o);
+
+    vec2 dir = vec2(0.0);
+    float len = 0.0;
+    easu_set(dir, len, pp, true,  false, false, false, bL, eL, fL, gL, jL);
+    easu_set(dir, len, pp, false, true,  false, false, cL, fL, gL, hL, kL);
+    easu_set(dir, len, pp, false, false, true,  false, fL, iL, jL, kL, nL);
+    easu_set(dir, len, pp, false, false, false, true,  gL, jL, kL, lL, oL);
+
+    vec2 dir2 = dir * dir;
+    float dirR = dir2.x + dir2.y;
+    bool zro = dirR < (1.0 / 32768.0);
+    dirR = rsq_lo(dirR);
+    dirR = zro ? 1.0 : dirR;
+    dir.x = zro ? 1.0 : dir.x;
+    dir *= dirR;
+    len *= 0.5;
+    len *= len;
+    float stretch = (dir.x * dir.x + dir.y * dir.y) * rcp_lo(max(abs(dir.x), abs(dir.y)));
+    vec2 len2 = vec2(1.0 + (stretch - 1.0) * len, 1.0 - 0.5 * len);
+    float lob = 0.5 + ((0.25 - 0.04) - 0.5) * len;
+    float clp = rcp_lo(lob);
+
+    vec3 min4 = min(min(f.rgb, g.rgb), min(j.rgb, k.rgb));
+    vec3 max4 = max(max(f.rgb, g.rgb), max(j.rgb, k.rgb));
+
+    vec3 aC = vec3(0.0);
+    float aW = 0.0;
+    easu_tap(aC, aW, vec2( 0.0, -1.0) - pp, dir, len2, lob, clp, b.rgb);
+    easu_tap(aC, aW, vec2( 1.0, -1.0) - pp, dir, len2, lob, clp, c.rgb);
+    easu_tap(aC, aW, vec2(-1.0,  1.0) - pp, dir, len2, lob, clp, i.rgb);
+    easu_tap(aC, aW, vec2( 0.0,  1.0) - pp, dir, len2, lob, clp, j.rgb);
+    easu_tap(aC, aW, vec2( 0.0,  0.0) - pp, dir, len2, lob, clp, f.rgb);
+    easu_tap(aC, aW, vec2(-1.0,  0.0) - pp, dir, len2, lob, clp, e.rgb);
+    easu_tap(aC, aW, vec2( 1.0,  1.0) - pp, dir, len2, lob, clp, k.rgb);
+    easu_tap(aC, aW, vec2( 2.0,  1.0) - pp, dir, len2, lob, clp, l.rgb);
+    easu_tap(aC, aW, vec2( 2.0,  0.0) - pp, dir, len2, lob, clp, h.rgb);
+    easu_tap(aC, aW, vec2( 1.0,  0.0) - pp, dir, len2, lob, clp, g.rgb);
+    easu_tap(aC, aW, vec2( 1.0,  2.0) - pp, dir, len2, lob, clp, o.rgb);
+    easu_tap(aC, aW, vec2( 0.0,  2.0) - pp, dir, len2, lob, clp, n.rgb);
+
+    vec3 pix = min(max4, max(min4, aC * (1.0 / aW)));
+    o_color = vec4(clamp(pix, 0.0, 1.0), 1.0);
+  }`;
+
+const RCAS_FS = `#version 300 es
+  precision highp float;
+  precision highp int;
+
+  uniform sampler2D u_tex;
+  uniform sampler2D u_lut;
+  uniform ivec2 u_size;
+  uniform float u_sharpness;
+  uniform float u_exposure;
+  uniform float u_contrast;
+  uniform float u_saturation;
+
+  out vec4 o_color;
+
+  // This is the limit AMD uses for "unnatural results" in RCAS.
+  const float FSR_RCAS_LIMIT = 0.1875;
+
+  vec3 fetch(ivec2 p) {
+    return texelFetch(u_tex, clamp(p, ivec2(0), u_size - 1), 0).rgb;
+  }
+
+  // Exact sRGB EOTF. The cubic approximation this replaced lost several
+  // display codes in deep shadows across the encode/decode round trip.
+  float srgb_to_linear(float x) {
+    return x <= 0.04045 ? x / 12.92 : pow((x + 0.055) / 1.055, 2.4);
+  }
+
+  float linear_to_srgb(float x) {
+    // The LUT has 256 texels; sample their centers, not the texture edges.
+    float u = (clamp(x, 0.0, 1.0) * 255.0 + 0.5) / 256.0;
+    return texture(u_lut, vec2(u, 0.5)).r;
+  }
+
+  float max3(float a, float b, float c) { return max(a, max(b, c)); }
+  float min3(float a, float b, float c) { return min(a, min(b, c)); }
+
+  void main() {
+    ivec2 ip = ivec2(gl_FragCoord.xy);
+    vec3 bg = fetch(ip + ivec2( 0, -1));
+    vec3 dg = fetch(ip + ivec2(-1,  0));
+    vec3 eg = fetch(ip);
+    vec3 fg = fetch(ip + ivec2( 1,  0));
+    vec3 hg = fetch(ip + ivec2( 0,  1));
+
+    // Gamma-aware variant: decode the five taps, solve RCAS and clamp the
+    // result in linear light, then re-encode. This avoids the highlight
+    // overdrive a gamma-space unsharp mask produces.
+    vec3 b = vec3(srgb_to_linear(bg.r), srgb_to_linear(bg.g), srgb_to_linear(bg.b));
+    vec3 d = vec3(srgb_to_linear(dg.r), srgb_to_linear(dg.g), srgb_to_linear(dg.b));
+    vec3 e = vec3(srgb_to_linear(eg.r), srgb_to_linear(eg.g), srgb_to_linear(eg.b));
+    vec3 f = vec3(srgb_to_linear(fg.r), srgb_to_linear(fg.g), srgb_to_linear(fg.b));
+    vec3 h = vec3(srgb_to_linear(hg.r), srgb_to_linear(hg.g), srgb_to_linear(hg.b));
+
+    float mn4R = min(min3(b.r, d.r, f.r), h.r);
+    float mn4G = min(min3(b.g, d.g, f.g), h.g);
+    float mn4B = min(min3(b.b, d.b, f.b), h.b);
+    float mx4R = max(max3(b.r, d.r, f.r), h.r);
+    float mx4G = max(max3(b.g, d.g, f.g), h.g);
+    float mx4B = max(max3(b.b, d.b, f.b), h.b);
+
+    // RCAS limiters. Exact reciprocals, guarded where the original can hit
+    // 0/0 on flat black or white ("no sharpening possible").
+    float hitMinR = min(mn4R, e.r) * (4.0 * mx4R > 0.0 ? 1.0 / (4.0 * mx4R) : 0.0);
+    float hitMinG = min(mn4G, e.g) * (4.0 * mx4G > 0.0 ? 1.0 / (4.0 * mx4G) : 0.0);
+    float hitMinB = min(mn4B, e.b) * (4.0 * mx4B > 0.0 ? 1.0 / (4.0 * mx4B) : 0.0);
+    float denR = 4.0 * mn4R - 4.0;
+    float denG = 4.0 * mn4G - 4.0;
+    float denB = 4.0 * mn4B - 4.0;
+    float hitMaxR = denR < -1e-6 ? (1.0 - max(mx4R, e.r)) / denR : 0.0;
+    float hitMaxG = denG < -1e-6 ? (1.0 - max(mx4G, e.g)) / denG : 0.0;
+    float hitMaxB = denB < -1e-6 ? (1.0 - max(mx4B, e.b)) / denB : 0.0;
+
+    float lobeR = max(-hitMinR, hitMaxR);
+    float lobeG = max(-hitMinG, hitMaxG);
+    float lobeB = max(-hitMinB, hitMaxB);
+    float lobe = max(-FSR_RCAS_LIMIT, min(max3(lobeR, lobeG, lobeB), 0.0)) * u_sharpness;
+    float rcpL = 1.0 / (4.0 * lobe + 1.0);
+    vec3 pix = (lobe * (b + d + h + f) + e) * rcpL;
+
+    // Colour grade in linear light: exposure, then contrast around middle
+    // gray, then saturation around Rec.709 luma. Doing this before the sRGB
+    // encode keeps the sliders perceptually well behaved.
+    pix *= u_exposure;
+    pix = (pix - 0.18) * u_contrast + 0.18;
+    float luma = dot(pix, vec3(0.2126, 0.7152, 0.0722));
+    pix = vec3(luma) + (pix - luma) * u_saturation;
+    pix = max(pix, 0.0);
+
+    o_color = vec4(linear_to_srgb(pix.r), linear_to_srgb(pix.g), linear_to_srgb(pix.b), 1.0);
+  }`;
 
 const sharp = {
   gl: null,
-  program: null,
-  texture: null,
-  uTexel: null,
-  uStrength: null,
+  easuProgram: null,
+  rcasProgram: null,
+  inputTex: null,
+  midTex: null,
+  fbo: null,
+  lutTex: null,
+  u: {
+    easuTex: null, easuSize: null, con0: null,
+    rcasTex: null, rcasLut: null, rcasSize: null, rcasSharp: null,
+    rcasExposure: null, rcasContrast: null, rcasSaturation: null,
+  },
+  conCache: null,
+  grade: { exposure: 1, contrast: 1, saturation: 1 },
+  inW: 0,
+  inH: 0,
+  outSize: null,
+  texW: 0,
+  texH: 0,
+  maxTex: 0,
   active: false,
   shown: false,
   raf: 0,
   rvfc: 0,
-  viewW: 0,
-  viewH: 0,
+  sizeDirty: true,
+  dpr: 0,
   unavailable: false,
+  factor: 0,
 };
 
-function sharpnessAmount() {
-  const n = parseInt(sharpnessInput.value, 10);
-  return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : 0;
+function sliderAmount(input, min, max) {
+  const n = parseInt(input.value, 10);
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : 0;
 }
 
-function sharpnessStrength() {
-  return (sharpnessAmount() / 100) * 1.2;
+function sharpnessAmount() {
+  return sliderAmount(sharpnessInput, 0, 100);
+}
+
+function colorAmount(input) {
+  return sliderAmount(input, -100, 100);
+}
+
+// The UI slider is inverted onto FSR's "stops" scale: 100 is FSR sharpness
+// 0 (maximum) and lower values halve the effect every 50 slider points.
+function sharpnessFactor() {
+  const amount = sharpnessAmount();
+  return amount > 0 ? Math.pow(2, -(100 - amount) / 50) : 0;
+}
+
+function colorIsNeutral() {
+  return colorAmount(brightnessInput) === 0
+    && colorAmount(contrastInput) === 0
+    && colorAmount(saturationInput) === 0;
+}
+
+function postProcessActive() {
+  return sharpnessAmount() > 0 || !colorIsNeutral();
+}
+
+// Brightness is exposure in stops (±1.5 EV); contrast pivots around linear
+// middle gray; saturation is a straight 0..2× mix.
+function updateGrade() {
+  const exposure = Math.pow(2, colorAmount(brightnessInput) / 100 * 1.5);
+  const contrast = Math.max(0.05, 1 + colorAmount(contrastInput) / 100);
+  const saturation = Math.max(0, 1 + colorAmount(saturationInput) / 100);
+  sharp.grade.exposure = exposure;
+  sharp.grade.contrast = contrast;
+  sharp.grade.saturation = saturation;
+  brightnessValue.textContent = String(colorAmount(brightnessInput));
+  contrastValue.textContent = String(colorAmount(contrastInput));
+  saturationValue.textContent = String(colorAmount(saturationInput));
+}
+
+function makeSharpProgram(gl, fragmentSource) {
+  const compile = (type, source) => {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      console.warn("sharpening shader:", gl.getShaderInfoLog(shader));
+      gl.deleteShader(shader);
+      return null;
+    }
+    return shader;
+  };
+  const vs = compile(gl.VERTEX_SHADER, FULLSCREEN_VS);
+  const fs = compile(gl.FRAGMENT_SHADER, fragmentSource);
+  if (!vs || !fs) {
+    if (vs) gl.deleteShader(vs);
+    if (fs) gl.deleteShader(fs);
+    return null;
+  }
+  const program = gl.createProgram();
+  gl.attachShader(program, vs);
+  gl.attachShader(program, fs);
+  gl.linkProgram(program);
+  gl.deleteShader(vs);
+  gl.deleteShader(fs);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    console.warn("sharpening program:", gl.getProgramInfoLog(program));
+    gl.deleteProgram(program);
+    return null;
+  }
+  return program;
+}
+
+function makeSrgbLut(gl) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  const data = new Uint8Array(256 * 4);
+  for (let i = 0; i < 256; i++) {
+    const x = i / 255;
+    const s = x <= 0.0031308 ? 12.92 * x : 1.055 * Math.pow(x, 1 / 2.4) - 0.055;
+    const v = Math.round(Math.min(1, Math.max(0, s)) * 255);
+    data[i * 4] = v;
+    data[i * 4 + 1] = v;
+    data[i * 4 + 2] = v;
+    data[i * 4 + 3] = 255;
+  }
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return tex;
 }
 
 function initSharpGl() {
@@ -96,121 +483,211 @@ function initSharpGl() {
     sharp.unavailable = true;
     return null;
   }
-  const compile = (type, source) => {
-    const shader = gl.createShader(type);
-    gl.shaderSource(shader, source);
-    gl.compileShader(shader);
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-      console.warn("sharpness shader:", gl.getShaderInfoLog(shader));
-      return null;
-    }
-    return shader;
-  };
-  const vs = compile(gl.VERTEX_SHADER, `#version 300 es
-    in vec2 a_pos;
-    out vec2 v_uv;
-    void main() { v_uv = a_pos * 0.5 + 0.5; gl_Position = vec4(a_pos, 0.0, 1.0); }`);
-  const fs = compile(gl.FRAGMENT_SHADER, `#version 300 es
-    precision highp float;
-    uniform sampler2D u_tex;
-    uniform vec2 u_texel;
-    uniform float u_strength;
-    in vec2 v_uv;
-    out vec4 o_color;
-    void main() {
-      vec3 c  = texture(u_tex, v_uv).rgb;
-      vec3 n  = texture(u_tex, v_uv + vec2(0.0, -u_texel.y)).rgb;
-      vec3 s  = texture(u_tex, v_uv + vec2(0.0,  u_texel.y)).rgb;
-      vec3 e  = texture(u_tex, v_uv + vec2( u_texel.x, 0.0)).rgb;
-      vec3 w  = texture(u_tex, v_uv + vec2(-u_texel.x, 0.0)).rgb;
-      vec3 ne = texture(u_tex, v_uv + vec2( u_texel.x, -u_texel.y)).rgb;
-      vec3 nw = texture(u_tex, v_uv + vec2(-u_texel.x, -u_texel.y)).rgb;
-      vec3 se = texture(u_tex, v_uv + vec2( u_texel.x,  u_texel.y)).rgb;
-      vec3 sw = texture(u_tex, v_uv + vec2(-u_texel.x,  u_texel.y)).rgb;
-      vec3 blur = c * 0.25 + (n + s + e + w) * 0.125 + (ne + nw + se + sw) * 0.0625;
-      vec3 sharpened = c + (c - blur) * u_strength;
-      vec3 lo = min(min(min(n, s), min(e, w)), c);
-      vec3 hi = max(max(max(n, s), max(e, w)), c);
-      o_color = vec4(clamp(sharpened, lo, hi), 1.0);
-    }`);
-  if (!vs || !fs) {
+  if (gl.isContextLost()) return null;
+  const easu = makeSharpProgram(gl, EASU_FS);
+  const rcas = makeSharpProgram(gl, RCAS_FS);
+  if (!easu || !rcas) {
+    if (easu) gl.deleteProgram(easu);
+    if (rcas) gl.deleteProgram(rcas);
     sharp.unavailable = true;
     return null;
   }
-  const program = gl.createProgram();
-  gl.attachShader(program, vs);
-  gl.attachShader(program, fs);
-  gl.linkProgram(program);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    console.warn("sharpness program:", gl.getProgramInfoLog(program));
-    sharp.unavailable = true;
-    return null;
-  }
-  gl.useProgram(program);
-  const buffer = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
-  const pos = gl.getAttribLocation(program, "a_pos");
-  gl.enableVertexAttribArray(pos);
-  gl.vertexAttribPointer(pos, 2, gl.FLOAT, false, 0, 0);
-  const texture = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+  const inputTex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, inputTex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+
   sharp.gl = gl;
-  sharp.program = program;
-  sharp.texture = texture;
-  sharp.uTexel = gl.getUniformLocation(program, "u_texel");
-  sharp.uStrength = gl.getUniformLocation(program, "u_strength");
+  sharp.easuProgram = easu;
+  sharp.rcasProgram = rcas;
+  sharp.inputTex = inputTex;
+  sharp.lutTex = makeSrgbLut(gl);
+  sharp.maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+  sharp.u.easuTex = gl.getUniformLocation(easu, "u_tex");
+  sharp.u.easuSize = gl.getUniformLocation(easu, "u_in_size");
+  sharp.u.con0 = gl.getUniformLocation(easu, "u_con0");
+  sharp.u.rcasTex = gl.getUniformLocation(rcas, "u_tex");
+  sharp.u.rcasLut = gl.getUniformLocation(rcas, "u_lut");
+  sharp.u.rcasSize = gl.getUniformLocation(rcas, "u_size");
+  sharp.u.rcasSharp = gl.getUniformLocation(rcas, "u_sharpness");
+  sharp.u.rcasExposure = gl.getUniformLocation(rcas, "u_exposure");
+  sharp.u.rcasContrast = gl.getUniformLocation(rcas, "u_contrast");
+  sharp.u.rcasSaturation = gl.getUniformLocation(rcas, "u_saturation");
+  gl.disable(gl.BLEND);
+  gl.disable(gl.DEPTH_TEST);
+  gl.disable(gl.CULL_FACE);
   return gl;
+}
+
+function targetSize(vw, vh) {
+  const dpr = window.devicePixelRatio || 1;
+  if (!sharp.sizeDirty && sharp.dpr === dpr
+      && sharp.inW === vw && sharp.inH === vh && sharp.outSize) {
+    return sharp.outSize;
+  }
+  const cw = videoWrap.clientWidth;
+  const ch = videoWrap.clientHeight;
+  if (!cw || !ch) return null;
+
+  sharp.sizeDirty = false;
+  sharp.dpr = dpr;
+  sharp.inW = vw;
+  sharp.inH = vh;
+
+  // Match the video's on-screen device-pixel size. This matters even when
+  // the CSS size is smaller than the source: a 720p stream shown in a
+  // 1200px-wide box at 2x DPR still has 2400 device pixels to fill.
+  const scale = Math.min(cw / vw, ch / vh);
+  let w = Math.max(vw, Math.round(vw * scale * dpr));
+  let h = Math.max(vh, Math.round(w * vh / vw));
+
+  const maxPixels = Math.min(SHARP_MAX_PIXELS, sharp.maxTex * sharp.maxTex);
+  if (w * h > maxPixels) {
+    const k = Math.sqrt(maxPixels / (w * h));
+    w = Math.max(1, Math.floor(w * k));
+    h = Math.max(1, Math.round(w * vh / vw));
+  }
+  if (w > sharp.maxTex) {
+    w = sharp.maxTex;
+    h = Math.max(1, Math.round(w * vh / vw));
+  }
+  if (h > sharp.maxTex) {
+    h = sharp.maxTex;
+    w = Math.max(1, Math.round(h * vw / vh));
+  }
+  sharp.outSize = { w, h };
+  return sharp.outSize;
+}
+
+function easuConstants(vw, vh, w, h) {
+  if (sharp.conCache && sharp.conCache.vw === vw && sharp.conCache.vh === vh
+      && sharp.conCache.w === w && sharp.conCache.h === h) {
+    return sharp.conCache;
+  }
+  const rx = vw / w;
+  const ry = vh / h;
+  const con = {
+    vw, vh, w, h,
+    con0: [rx, ry, 0.5 * rx - 0.5, 0.5 * ry - 0.5],
+  };
+  sharp.conCache = con;
+  return con;
+}
+
+function ensureSharpTargets(w, h) {
+  const gl = sharp.gl;
+  if (sharp.midTex && sharp.texW === w && sharp.texH === h) return true;
+  if (sharp.fbo) {
+    gl.deleteFramebuffer(sharp.fbo);
+    sharp.fbo = null;
+  }
+  if (sharp.midTex) {
+    gl.deleteTexture(sharp.midTex);
+    sharp.midTex = null;
+  }
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  if (status !== gl.FRAMEBUFFER_COMPLETE) {
+    console.warn("sharpening framebuffer incomplete:", status);
+    gl.deleteFramebuffer(fbo);
+    gl.deleteTexture(tex);
+    sharp.unavailable = true;
+    return false;
+  }
+  sharp.midTex = tex;
+  sharp.fbo = fbo;
+  sharp.texW = w;
+  sharp.texH = h;
+  return true;
 }
 
 function drawSharp() {
   const gl = sharp.gl;
-  if (!gl || video.readyState < 2) return;
-  const w = video.videoWidth;
-  const h = video.videoHeight;
-  if (!w || !h) return;
+  if (!gl) return false;
+  if (video.readyState < 2) return true;
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  if (!vw || !vh) return true;
+
+  const target = targetSize(vw, vh);
+  if (!target) return true;
+  const { w, h } = target;
+  if (!ensureSharpTargets(w, h)) {
+    stopSharpening();
+    return false;
+  }
   if (sharpCanvas.width !== w || sharpCanvas.height !== h) {
     sharpCanvas.width = w;
     sharpCanvas.height = h;
-    sharp.viewW = 0;
   }
-  if (sharp.viewW !== w || sharp.viewH !== h) {
-    gl.viewport(0, 0, w, h);
-    gl.uniform2f(sharp.uTexel, 1 / w, 1 / h);
-    sharp.viewW = w;
-    sharp.viewH = h;
-  }
-  gl.useProgram(sharp.program);
-  gl.uniform1f(sharp.uStrength, sharpnessStrength());
-  gl.bindTexture(gl.TEXTURE_2D, sharp.texture);
+
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, sharp.inputTex);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+
+  const con = easuConstants(vw, vh, w, h);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, sharp.fbo);
+  gl.viewport(0, 0, w, h);
+  gl.useProgram(sharp.easuProgram);
+  gl.uniform1i(sharp.u.easuTex, 0);
+  gl.uniform2i(sharp.u.easuSize, vw, vh);
+  gl.uniform4fv(sharp.u.con0, con.con0);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, w, h);
+  gl.useProgram(sharp.rcasProgram);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, sharp.midTex);
+  gl.uniform1i(sharp.u.rcasTex, 0);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, sharp.lutTex);
+  gl.uniform1i(sharp.u.rcasLut, 1);
+  gl.uniform2i(sharp.u.rcasSize, w, h);
+  gl.uniform1f(sharp.u.rcasSharp, sharp.factor);
+  gl.uniform1f(sharp.u.rcasExposure, sharp.grade.exposure);
+  gl.uniform1f(sharp.u.rcasContrast, sharp.grade.contrast);
+  gl.uniform1f(sharp.u.rcasSaturation, sharp.grade.saturation);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
   if (!sharp.shown) {
     sharp.shown = true;
     sharpCanvas.classList.remove("hidden");
     video.classList.add("sharpening");
   }
+  return true;
 }
 
 function sharpFrame() {
   if (!sharp.active) return;
-  drawSharp();
-  if (video.requestVideoFrameCallback) {
-    sharp.rvfc = video.requestVideoFrameCallback(sharpFrame);
-  } else {
-    sharp.raf = requestAnimationFrame(sharpFrame);
+  if (drawSharp()) {
+    if (video.requestVideoFrameCallback) {
+      sharp.rvfc = video.requestVideoFrameCallback(sharpFrame);
+    } else {
+      sharp.raf = requestAnimationFrame(sharpFrame);
+    }
   }
 }
 
 function startSharpening() {
-  if (sharp.active || sharpnessAmount() === 0) return;
+  if (sharp.active || !postProcessActive()) return;
   if (!initSharpGl()) return;
   sharp.active = true;
+  sharp.sizeDirty = true;
   sharpFrame();
 }
 
@@ -225,29 +702,93 @@ function stopSharpening() {
   video.classList.remove("sharpening");
 }
 
-function applySharpness() {
-  const value = sharpnessAmount();
-  sharpnessValue.textContent = String(value);
-  if (value === 0) stopSharpening();
+function persistPicture() {
+  try {
+    localStorage.setItem("psrp.sharpness", String(sharpnessAmount()));
+    localStorage.setItem("psrp.brightness", String(colorAmount(brightnessInput)));
+    localStorage.setItem("psrp.contrast", String(colorAmount(contrastInput)));
+    localStorage.setItem("psrp.saturation", String(colorAmount(saturationInput)));
+  } catch {}
+}
+
+function applyPicture() {
+  sharpnessValue.textContent = String(sharpnessAmount());
+  sharp.factor = sharpnessFactor();
+  updateGrade();
+  if (!postProcessActive()) stopSharpening();
   else if (state.stream) startSharpening();
 }
 
-sharpnessInput.addEventListener("input", () => {
-  try {
-    localStorage.setItem("psrp.sharpness", String(sharpnessAmount()));
-  } catch {}
-  applySharpness();
+function bindPictureSlider(input) {
+  input.addEventListener("input", applyPicture);
+  input.addEventListener("change", persistPicture);
+}
+
+[sharpnessInput, brightnessInput, contrastInput, saturationInput].forEach(bindPictureSlider);
+
+pictureReset.addEventListener("click", () => {
+  sharpnessInput.value = String(PICTURE_DEFAULTS.sharpness);
+  brightnessInput.value = String(PICTURE_DEFAULTS.brightness);
+  contrastInput.value = String(PICTURE_DEFAULTS.contrast);
+  saturationInput.value = String(PICTURE_DEFAULTS.saturation);
+  persistPicture();
+  applyPicture();
 });
 
-(function initSharpness() {
-  let value = 35;
-  try {
-    const stored = localStorage.getItem("psrp.sharpness");
-    if (stored !== null) value = Math.min(100, Math.max(0, parseInt(stored, 10) || 0));
-  } catch {}
-  sharpnessInput.value = String(value);
-  sharpnessValue.textContent = String(value);
+(function initPicture() {
+  const load = (input, key, fallback) => {
+    let value = fallback;
+    try {
+      const stored = localStorage.getItem(key);
+      if (stored !== null) {
+        const n = parseInt(stored, 10);
+        if (Number.isFinite(n)) value = n;
+      }
+    } catch {}
+    const min = parseInt(input.min, 10);
+    const max = parseInt(input.max, 10);
+    value = Math.min(max, Math.max(min, value));
+    input.value = String(value);
+  };
+  load(sharpnessInput, "psrp.sharpness", PICTURE_DEFAULTS.sharpness);
+  load(brightnessInput, "psrp.brightness", PICTURE_DEFAULTS.brightness);
+  load(contrastInput, "psrp.contrast", PICTURE_DEFAULTS.contrast);
+  load(saturationInput, "psrp.saturation", PICTURE_DEFAULTS.saturation);
+  applyPicture();
 })();
+
+let resizeTimer = 0;
+function scheduleSizeDirty() {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { sharp.sizeDirty = true; }, 150);
+}
+
+if (typeof ResizeObserver === "function") {
+  new ResizeObserver(scheduleSizeDirty).observe(videoWrap);
+} else {
+  window.addEventListener("resize", scheduleSizeDirty);
+}
+document.addEventListener("fullscreenchange", () => { sharp.sizeDirty = true; });
+
+sharpCanvas.addEventListener("webglcontextlost", (event) => {
+  event.preventDefault();
+  sharp.gl = null;
+  sharp.easuProgram = null;
+  sharp.rcasProgram = null;
+  sharp.inputTex = null;
+  sharp.midTex = null;
+  sharp.fbo = null;
+  sharp.lutTex = null;
+  sharp.texW = 0;
+  sharp.texH = 0;
+  sharp.unavailable = false;
+  stopSharpening();
+});
+sharpCanvas.addEventListener("webglcontextrestored", () => {
+  sharp.unavailable = false;
+  sharp.sizeDirty = true;
+  if (postProcessActive() && state.stream) startSharpening();
+});
 
 
 function setStatus(text, kind = "") {
@@ -257,9 +798,15 @@ function setStatus(text, kind = "") {
 
 let toastTimer = null;
 function toast(message, bad = false) {
+  // A new toast replaces the old one, so its dismissal timer must be reset;
+  // otherwise the previous timer hides the new message almost immediately.
+  if (toastTimer) clearTimeout(toastTimer);
   toastEl.textContent = message;
   toastEl.className = "toast" + (bad ? " bad" : "");
-  toastTimer = setTimeout(() => toastEl.classList.add("hidden"), 4500);
+  toastTimer = setTimeout(() => {
+    toastEl.classList.add("hidden");
+    toastTimer = null;
+  }, 4500);
 }
 
 async function api(path, options = {}) {
@@ -350,8 +897,16 @@ function renderHosts() {
     del.title = "Remove";
     del.onclick = async () => {
       if (!confirm(`Remove ${host.name}?`)) return;
-      await api(`/api/hosts/${encodeURIComponent(host.id)}`, { method: "DELETE" });
-      await loadHosts();
+      del.disabled = true;
+      try {
+        await api(`/api/hosts/${encodeURIComponent(host.id)}`, { method: "DELETE" });
+        state.hosts = state.hosts.filter((h) => h.id !== host.id);
+        renderHosts();
+        loadHosts(); // best-effort refresh; it reports its own failures
+      } catch (e) {
+        toast(e.message, true);
+        del.disabled = false;
+      }
     };
     actions.append(play, wake, del);
     card.append(info, actions);
@@ -448,7 +1003,7 @@ $("register-form").addEventListener("submit", async (event) => {
 /* ── Session ───────────────────────────────────────────────────────────── */
 
 async function startSession(host) {
-  if (state.pc || state.sessionId) {
+  if (state.pc || state.sessionId || state.detachedActive) {
     toast("A session is already active", true);
     return;
   }
@@ -466,12 +1021,16 @@ async function startSession(host) {
         enable_dualsense: $("opt-dualsense").checked,
       }),
     });
-    state.sessionId = response.session_id;
-    await setupPeer(response.offer);
-    setBusy(true);
+    const sessionId = response.session_id;
+    state.sessionId = sessionId;
+    // Subscribe before ICE gathering so PIN/phase events are not missed.
     connectSocket();
+    setBusy(true);
+    await setupPeer(response.offer, sessionId);
+    if (state.sessionId !== sessionId) return;
     startInputLoop();
   } catch (e) {
+    if (state.sessionId === null) return;
     showOverlay("Could not start", e.message);
     setStatus("Error", "bad");
     toast(e.message, true);
@@ -480,7 +1039,7 @@ async function startSession(host) {
 }
 
 async function startDemo() {
-  if (state.pc || state.sessionId) {
+  if (state.pc || state.sessionId || state.detachedActive) {
     toast("A session is already active", true);
     return;
   }
@@ -488,12 +1047,15 @@ async function startDemo() {
   setStatus("Starting", "");
   try {
     const response = await api("/api/demo/start", { method: "POST" });
-    state.sessionId = response.session_id;
-    await setupPeer(response.offer);
-    setBusy(true);
+    const sessionId = response.session_id;
+    state.sessionId = sessionId;
     connectSocket();
+    setBusy(true);
+    await setupPeer(response.offer, sessionId);
+    if (state.sessionId !== sessionId) return;
     startInputLoop();
   } catch (e) {
+    if (state.sessionId === null) return;
     showOverlay("Could not start demo", e.message);
     setStatus("Error", "bad");
     toast(e.message, true);
@@ -501,10 +1063,46 @@ async function startDemo() {
   }
 }
 
+function stopDetachedPoll() {
+  if (detachedTimer) {
+    clearInterval(detachedTimer);
+    detachedTimer = null;
+  }
+}
+
+function startDetachedPoll() {
+  if (detachedTimer) return;
+  detachedTimer = setInterval(async () => {
+    try {
+      const status = await api("/api/status");
+      if (!status.active) {
+        stopDetachedPoll();
+        state.detachedActive = false;
+        setBusy(false);
+        setStatus("Idle", "");
+        showOverlay(
+          "Select a console to begin",
+          "Registration pairs this browser bridge with your PS4 or PS5.",
+        );
+      }
+    } catch {}
+  }, 2500);
+}
+
 async function loadStatus() {
   try {
     const status = await api("/api/status");
     demoBtn.classList.toggle("hidden", !status.demo);
+    if (status.active && !state.pc && !state.sessionId && !state.detachedActive) {
+      state.detachedActive = true;
+      setBusy(true);
+      setStatus("Session active", "live");
+      showOverlay(
+        "Session already active",
+        "A stream started in another tab is still running. Press Stop to release the console.",
+      );
+      startDetachedPoll();
+    }
   } catch {}
 }
 
@@ -540,27 +1138,34 @@ async function loadPsnLogin() {
   } catch {}
 }
 
-async function setupPeer(offer) {
+async function setupPeer(offer, sessionId) {
   const pc = new RTCPeerConnection({ iceServers: [] });
   state.pc = pc;
   state.stream = new MediaStream();
+  // The session can end (or be replaced) while any of these awaits are in
+  // flight; never let stale callbacks touch the new session's state.
+  const alive = () => state.pc === pc && state.sessionId === sessionId;
+  const abandon = () => {
+    try { pc.close(); } catch {}
+  };
   pc.ontrack = (event) => {
+    if (!alive() || !state.stream) return;
     state.stream.addTrack(event.track);
     video.srcObject = state.stream;
     video.muted = false;
-    applySharpness();
+    applyPicture();
     video.play().catch(() => {
       toast("Click the video to enable audio");
     });
   };
   pc.onconnectionstatechange = () => {
+    if (state.pc !== pc) return;
     const s = pc.connectionState;
     if (s === "connected") {
       hideOverlay();
       setStatus("Live", "live");
       state.streaming = true;
       hintOverlay.classList.add("hidden");
-      setStatus("Live", "live");
     } else if (s === "failed" || s === "disconnected" || s === "closed") {
       setStatus(s, "bad");
     } else {
@@ -568,12 +1173,16 @@ async function setupPeer(offer) {
     }
   };
   await pc.setRemoteDescription({ type: "offer", sdp: offer.sdp });
+  if (!alive()) { abandon(); return; }
   const answer = await pc.createAnswer();
+  if (!alive()) { abandon(); return; }
   await pc.setLocalDescription(answer);
+  if (!alive()) { abandon(); return; }
   await waitForIceGathering(pc);
+  if (!alive()) { abandon(); return; }
   await api("/api/session/answer", {
     method: "POST",
-    body: JSON.stringify({ sdp: pc.localDescription.sdp }),
+    body: JSON.stringify({ session_id: sessionId, sdp: pc.localDescription.sdp }),
   });
   video.focus();
 }
@@ -634,7 +1243,9 @@ function handleServerEvent(event) {
     case "trigger_effects":
       break;
     case "stats":
-      statsEl.textContent = `${event.received} pkts · ${event.lost} lost`;
+      packetCount = { received: event.received, lost: event.lost };
+      consoleLatencyMs = Number.isFinite(event.latency_ms) ? event.latency_ms : null;
+      renderStats();
       break;
     case "remote_disconnect":
       toast(`Console disconnected: ${event.reason}`, true);
@@ -644,10 +1255,10 @@ function handleServerEvent(event) {
       toast(event.message, true);
       break;
     case "quit":
+      cleanupSession(true);
       setStatus(event.reason || "Ended", event.reason === "Stopped" ? "" : "bad");
       toast(event.reason_string || event.reason || "Session ended", event.reason !== "Stopped");
       showOverlay("Session ended", event.reason_string || event.reason || "");
-      cleanupSession(true);
       break;
     case "peer_state":
       if (["failed", "disconnected", "closed"].includes(event.state)) {
@@ -685,6 +1296,19 @@ $("pin-form").addEventListener("submit", (event) => {
   pinModal.classList.add("hidden");
 });
 
+function cancelPin() {
+  pinModal.classList.add("hidden");
+  stopSession();
+}
+
+$("pin-cancel").addEventListener("click", cancelPin);
+$("pin-input").addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    cancelPin();
+  }
+});
+
 async function stopSession() {
   try {
     await api("/api/session/stop", { method: "POST", body: "{}" });
@@ -696,7 +1320,15 @@ async function stopSession() {
 
 async function cleanupSession(resetUi) {
   state.streaming = false;
+  state.detachedActive = false;
+  stopDetachedPoll();
   state.keyboard.clear();
+  state.mouse = { dx: 0, dy: 0, left: false, right: false, locked: false };
+  state.touches.clear();
+  state.lastInputJson = "";
+  state.lastInputAt = 0;
+  pinModal.classList.add("hidden");
+  if (document.pointerLockElement) document.exitPointerLock();
   if (state.inputTimer) {
     clearInterval(state.inputTimer);
     state.inputTimer = null;
@@ -711,6 +1343,8 @@ async function cleanupSession(resetUi) {
   }
   state.stream = null;
   state.sessionId = null;
+  consoleLatencyMs = null;
+  packetCount = { received: 0, lost: 0 };
   stopSharpening();
   video.srcObject = null;
   setBusy(false);
@@ -920,8 +1554,25 @@ document.addEventListener("mouseup", (event) => {
 });
 video.addEventListener("contextmenu", (event) => event.preventDefault());
 
-function touchpadPoint(event) {
+function videoContentRect() {
   const rect = video.getBoundingClientRect();
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  if (!vw || !vh) return rect;
+  // `object-fit: contain` may letterbox the frame inside the element.
+  const scale = Math.min(rect.width / vw, rect.height / vh);
+  const width = vw * scale;
+  const height = vh * scale;
+  return {
+    left: rect.left + (rect.width - width) / 2,
+    top: rect.top + (rect.height - height) / 2,
+    width,
+    height,
+  };
+}
+
+function touchpadPoint(event) {
+  const rect = videoContentRect();
   const x = Math.round(((event.clientX - rect.left) / rect.width) * 1920);
   const y = Math.round(((event.clientY - rect.top) / rect.height) * 942);
   return {

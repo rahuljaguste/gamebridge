@@ -13,5 +13,7 @@ pub struct MediaShared {
     /// SPS/PPS Annex-B blob from the stream info / video format event.
     pub param_sets: Mutex<Vec<Bytes>>,
     pub audio_format: Mutex<Option<AudioFormat>>,
+    /// Latest console round-trip time, surfaced in the periodic stats event.
+    pub latency_ms: Mutex<Option<f64>>,
     pub first_idr_sent: AtomicBool,
 }

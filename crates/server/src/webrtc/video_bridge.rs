@@ -18,8 +18,6 @@ use chiaki_core::session::SessionCommand;
 use crate::webrtc::TrackWriter;
 use crate::webrtc::shared::MediaShared;
 
-const DEFAULT_FRAME_DURATION: Duration = Duration::from_millis(33);
-const MAX_FRAME_DURATION: Duration = Duration::from_millis(100);
 const CACHED_IDR_MAX_AGE: Duration = Duration::from_millis(150);
 
 pub async fn run(
@@ -28,11 +26,11 @@ pub async fn run(
     peer_connected: Arc<AtomicBool>,
     shared: Arc<MediaShared>,
     commands: mpsc::Sender<SessionCommand>,
+    frame_duration: Duration,
     cancel: CancellationToken,
 ) {
     let mut awaiting_idr = true;
     let mut last_frame: Option<u16> = None;
-    let mut last_emit: Option<Instant> = None;
     let mut cached_idr: Option<(VideoFrame, Instant)> = None;
     let mut last_keyframe_request: Option<Instant> = None;
 
@@ -60,7 +58,7 @@ pub async fn run(
             && at.elapsed() < CACHED_IDR_MAX_AGE
         {
             let index = cached.frame_index;
-            if send_frame(&writer, &shared, cached, &mut last_emit).await {
+            if send_frame(&writer, &shared, cached, frame_duration).await {
                 last_frame = Some(index);
                 awaiting_idr = false;
             }
@@ -94,7 +92,7 @@ pub async fn run(
         }
 
         let index = frame.frame_index;
-        if send_frame(&writer, &shared, frame, &mut last_emit).await {
+        if send_frame(&writer, &shared, frame, frame_duration).await {
             last_frame = Some(index);
             if awaiting_idr {
                 awaiting_idr = false;
@@ -111,7 +109,7 @@ async fn send_frame(
     writer: &TrackWriter,
     shared: &MediaShared,
     frame: VideoFrame,
-    last_emit: &mut Option<Instant>,
+    frame_duration: Duration,
 ) -> bool {
     let mut data = frame.data;
     if frame.is_idr && !frame.has_param_sets {
@@ -126,18 +124,15 @@ async fn send_frame(
             data = Bytes::from(combined);
         }
     }
-    let now = Instant::now();
-    let duration = last_emit
-        .map(|last| {
-            now.saturating_duration_since(last)
-                .clamp(DEFAULT_FRAME_DURATION / 3, MAX_FRAME_DURATION)
-        })
-        .unwrap_or(DEFAULT_FRAME_DURATION);
-    if let Err(e) = writer.write_sample(data, duration).await {
+    // RTP timestamps must advance at the stream's nominal frame rate, not by
+    // however long the frame took to arrive. Arrival-derived durations make
+    // the browser's render clock jitter whenever a frame is late, and the
+    // jitter accumulates into visible stutter. The console encodes at the
+    // requested `maxFps`, so a fixed 1/fps step is the correct timeline.
+    if let Err(e) = writer.write_sample(data, frame_duration).await {
         tracing::warn!("video write failed: {e:#}");
         return false;
     }
-    *last_emit = Some(now);
     if frame.is_idr {
         shared.first_idr_sent.store(true, Ordering::Relaxed);
     }

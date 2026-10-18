@@ -14,8 +14,8 @@
     <h1>PS Remote Play</h1>
   </div>
   <div class="topbar-right">
-    <span id="conn-status" class="status-pill">Idle</span>
-    <span id="stats" class="stats"></span>
+    <span id="conn-status" class="status-pill" role="status" aria-live="polite">Idle</span>
+    <span id="stats" class="stats" title="Round-trip time to the console · packets received · packets lost"></span>
   </div>
 </header>
 
@@ -93,7 +93,6 @@
           <p class="eyebrow">Remote Play</p>
           <h3 id="overlay-title">Select a console to begin</h3>
           <p id="overlay-text" class="muted">Registration pairs this browser bridge with your PS4 or PS5.</p>
-          <button id="overlay-action" class="primary hidden" type="button">Start</button>
         </div>
       </div>
       <div id="hint" class="hint-overlay hidden">Click the video to capture the mouse · Esc releases</div>
@@ -118,10 +117,10 @@
         <input id="opt-bitrate" type="number" min="100" max="100000" placeholder="auto"
                title="Higher bitrates preserve more detail and motion. 20000–30000 often helps 1080p.">
       </label>
-      <label class="sharp">Sharpness
-        <span class="sharp-row">
+      <label>Sharpness
+        <span class="slider-row">
           <input id="opt-sharpness" type="range" min="0" max="100" step="5" value="35">
-          <span id="sharpness-value" class="muted">35</span>
+          <span id="sharpness-value" class="muted slider-value">35</span>
         </span>
       </label>
       <label class="check" title="Experimental. Known to make the PS5 Remote Play server crash after repeated sessions.">
@@ -130,6 +129,28 @@
       </label>
       <button id="stop-btn" class="danger" type="button" disabled>Stop</button>
       <button id="fullscreen-btn" class="ghost" type="button">Fullscreen</button>
+    </div>
+
+    <div class="controls picture">
+      <label>Brightness
+        <span class="slider-row">
+          <input id="opt-brightness" type="range" min="-100" max="100" step="5" value="15">
+          <span id="brightness-value" class="muted slider-value">15</span>
+        </span>
+      </label>
+      <label>Contrast
+        <span class="slider-row">
+          <input id="opt-contrast" type="range" min="-100" max="100" step="5" value="20">
+          <span id="contrast-value" class="muted slider-value">20</span>
+        </span>
+      </label>
+      <label>Saturation
+        <span class="slider-row">
+          <input id="opt-saturation" type="range" min="-100" max="100" step="5" value="20">
+          <span id="saturation-value" class="muted slider-value">20</span>
+        </span>
+      </label>
+      <button id="picture-reset" class="ghost" type="button">Reset picture</button>
     </div>
 
     <details class="legend">
@@ -164,12 +185,13 @@
     <form id="pin-form">
       <input id="pin-input" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="PIN" autocomplete="off" required>
       <button id="pin-clear" class="ghost small" type="button">Clear</button>
+      <button id="pin-cancel" class="ghost small" type="button">Cancel</button>
       <button class="primary" type="submit">Send PIN</button>
     </form>
   </div>
 </div>
 
-<div id="toast" class="toast hidden"></div>
+<div id="toast" class="toast hidden" role="alert" aria-live="assertive"></div>
 <script type="module" src="/app.js"></script>
 </body>
 </html>
