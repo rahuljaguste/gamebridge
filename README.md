@@ -137,9 +137,15 @@ live.
   are graded in linear light inside the same pass. Brightness is exposure in
   ±1.5 EV, contrast pivots around middle gray, and saturation mixes around
   Rec.709 luma. **Reset picture** restores the defaults. Set every picture
-  control to neutral (Sharpness 0, Brightness/Contrast/Saturation 0) to bypass
-  the post-process entirely and display the WebRTC video directly. All values
-  are stored per browser.
+  control to neutral (Sharpness 0, Brightness/Contrast/Saturation 0, Temporal
+  0) to bypass the post-process entirely and display the WebRTC video directly.
+  All values are stored per browser.
+- **Temporal** (0–100, default 0) adds contrast-adaptive temporal accumulation
+  before RCAS. It clamps the previous frame to the current 3×3 neighbourhood
+  and reduces the blend where the correction is large, which settles
+  compression shimmer and specular aliasing without motion-vector smearing at
+  scene cuts. There are no engine motion vectors in a decoded stream, so very
+  fast motion can still ghost slightly; raise it gradually.
 - Sharpening cannot recover detail the console encoder discarded — pair it with
   a suitable bitrate. Resolution and FPS are encoded on the console.
 
