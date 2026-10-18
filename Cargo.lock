@@ -410,7 +410,7 @@ dependencies = [
 
 [[package]]
 name = "chiaki-core"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1469,7 +1469,7 @@ dependencies = [
 
 [[package]]
 name = "ps-remoteplay-server"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "async-trait",

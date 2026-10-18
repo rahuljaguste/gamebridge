@@ -85,6 +85,8 @@ const contrastInput = $("opt-contrast");
 const contrastValue = $("contrast-value");
 const saturationInput = $("opt-saturation");
 const saturationValue = $("saturation-value");
+const temporalInput = $("opt-temporal");
+const temporalValue = $("temporal-value");
 const pictureReset = $("picture-reset");
 
 // The HTML carries the initial slider positions; keep one source of truth.
@@ -96,6 +98,7 @@ const PICTURE_DEFAULTS = {
   brightness: parseInt(brightnessInput.defaultValue, 10),
   contrast: parseInt(contrastInput.defaultValue, 10),
   saturation: parseInt(saturationInput.defaultValue, 10),
+  temporal: parseInt(temporalInput.defaultValue, 10),
 };
 
 // Cap the post-process target. 4K is crisp on high-DPI displays without
@@ -249,6 +252,49 @@ const EASU_FS = `#version 300 es
     o_color = vec4(clamp(pix, 0.0, 1.0), 1.0);
   }`;
 
+// Contrast-adaptive temporal accumulation. There are no engine motion
+// vectors in a decoded stream, so history is clamped to the current 3x3
+// neighbourhood and its weight falls off where the clamp had to move it.
+// That keeps moving edges and scene cuts from smearing while settling
+// compression shimmer and specular aliasing.
+const TEMPORAL_FS = `#version 300 es
+  precision highp float;
+  precision highp int;
+
+  uniform sampler2D u_current;
+  uniform sampler2D u_history;
+  uniform ivec2 u_size;
+  uniform float u_weight;
+  uniform int u_valid;
+
+  out vec4 o_color;
+
+  vec3 fetch(ivec2 p) {
+    return texelFetch(u_current, clamp(p, ivec2(0), u_size - 1), 0).rgb;
+  }
+
+  void main() {
+    ivec2 p = ivec2(gl_FragCoord.xy);
+    vec3 c = fetch(p);
+    if (u_valid == 0 || u_weight <= 0.0) {
+      o_color = vec4(c, 1.0);
+      return;
+    }
+    vec3 lo = c;
+    vec3 hi = c;
+    for (int y = -1; y <= 1; y++) {
+      for (int x = -1; x <= 1; x++) {
+        vec3 s = fetch(p + ivec2(x, y));
+        lo = min(lo, s);
+        hi = max(hi, s);
+      }
+    }
+    vec3 h = clamp(texelFetch(u_history, p, 0).rgb, lo, hi);
+    float diff = max(max(abs(c.r - h.r), abs(c.g - h.g)), abs(c.b - h.b));
+    float confidence = 1.0 - smoothstep(0.015, 0.14, diff);
+    o_color = vec4(mix(c, h, clamp(u_weight * confidence, 0.0, 0.9)), 1.0);
+  }`;
+
 const RCAS_FS = `#version 300 es
   precision highp float;
   precision highp int;
@@ -343,18 +389,24 @@ const RCAS_FS = `#version 300 es
 const sharp = {
   gl: null,
   easuProgram: null,
+  temporalProgram: null,
   rcasProgram: null,
   inputTex: null,
   midTex: null,
   fbo: null,
+  historyTex: [null, null],
+  historyFbo: [null, null],
+  historyIndex: 0,
+  historyValid: false,
   lutTex: null,
   u: {
     easuTex: null, easuSize: null, con0: null,
+    tmpCurrent: null, tmpHistory: null, tmpSize: null, tmpWeight: null, tmpValid: null,
     rcasTex: null, rcasLut: null, rcasSize: null, rcasSharp: null,
     rcasExposure: null, rcasContrast: null, rcasSaturation: null,
   },
   conCache: null,
-  grade: { exposure: 1, contrast: 1, saturation: 1 },
+  grade: { exposure: 1, contrast: 1, saturation: 1, temporal: 0 },
   inW: 0,
   inH: 0,
   outSize: null,
@@ -384,6 +436,10 @@ function colorAmount(input) {
   return sliderAmount(input, -100, 100);
 }
 
+function temporalAmount() {
+  return sliderAmount(temporalInput, 0, 100);
+}
+
 // The UI slider is inverted onto FSR's "stops" scale: 100 is FSR sharpness
 // 0 (maximum) and lower values halve the effect every 50 slider points.
 function sharpnessFactor() {
@@ -398,7 +454,7 @@ function colorIsNeutral() {
 }
 
 function postProcessActive() {
-  return sharpnessAmount() > 0 || !colorIsNeutral();
+  return sharpnessAmount() > 0 || !colorIsNeutral() || temporalAmount() > 0;
 }
 
 // Brightness is exposure in stops (±1.5 EV); contrast pivots around linear
@@ -410,9 +466,13 @@ function updateGrade() {
   sharp.grade.exposure = exposure;
   sharp.grade.contrast = contrast;
   sharp.grade.saturation = saturation;
+  const temporal = temporalAmount() / 100;
+  if (temporal !== sharp.grade.temporal) sharp.historyValid = false;
+  sharp.grade.temporal = temporal;
   brightnessValue.textContent = String(colorAmount(brightnessInput));
   contrastValue.textContent = String(colorAmount(contrastInput));
   saturationValue.textContent = String(colorAmount(saturationInput));
+  temporalValue.textContent = String(temporalAmount());
 }
 
 function makeSharpProgram(gl, fragmentSource) {
@@ -485,9 +545,11 @@ function initSharpGl() {
   }
   if (gl.isContextLost()) return null;
   const easu = makeSharpProgram(gl, EASU_FS);
+  const temporal = makeSharpProgram(gl, TEMPORAL_FS);
   const rcas = makeSharpProgram(gl, RCAS_FS);
-  if (!easu || !rcas) {
+  if (!easu || !temporal || !rcas) {
     if (easu) gl.deleteProgram(easu);
+    if (temporal) gl.deleteProgram(temporal);
     if (rcas) gl.deleteProgram(rcas);
     sharp.unavailable = true;
     return null;
@@ -503,6 +565,7 @@ function initSharpGl() {
 
   sharp.gl = gl;
   sharp.easuProgram = easu;
+  sharp.temporalProgram = temporal;
   sharp.rcasProgram = rcas;
   sharp.inputTex = inputTex;
   sharp.lutTex = makeSrgbLut(gl);
@@ -510,6 +573,11 @@ function initSharpGl() {
   sharp.u.easuTex = gl.getUniformLocation(easu, "u_tex");
   sharp.u.easuSize = gl.getUniformLocation(easu, "u_in_size");
   sharp.u.con0 = gl.getUniformLocation(easu, "u_con0");
+  sharp.u.tmpCurrent = gl.getUniformLocation(temporal, "u_current");
+  sharp.u.tmpHistory = gl.getUniformLocation(temporal, "u_history");
+  sharp.u.tmpSize = gl.getUniformLocation(temporal, "u_size");
+  sharp.u.tmpWeight = gl.getUniformLocation(temporal, "u_weight");
+  sharp.u.tmpValid = gl.getUniformLocation(temporal, "u_valid");
   sharp.u.rcasTex = gl.getUniformLocation(rcas, "u_tex");
   sharp.u.rcasLut = gl.getUniformLocation(rcas, "u_lut");
   sharp.u.rcasSize = gl.getUniformLocation(rcas, "u_size");
@@ -578,17 +646,7 @@ function easuConstants(vw, vh, w, h) {
   return con;
 }
 
-function ensureSharpTargets(w, h) {
-  const gl = sharp.gl;
-  if (sharp.midTex && sharp.texW === w && sharp.texH === h) return true;
-  if (sharp.fbo) {
-    gl.deleteFramebuffer(sharp.fbo);
-    sharp.fbo = null;
-  }
-  if (sharp.midTex) {
-    gl.deleteTexture(sharp.midTex);
-    sharp.midTex = null;
-  }
+function makeColorTarget(gl, w, h) {
   const tex = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, tex);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
@@ -605,13 +663,48 @@ function ensureSharpTargets(w, h) {
     console.warn("sharpening framebuffer incomplete:", status);
     gl.deleteFramebuffer(fbo);
     gl.deleteTexture(tex);
+    return null;
+  }
+  return { tex, fbo };
+}
+
+function deleteColorTarget(gl, tex, fbo) {
+  if (fbo) gl.deleteFramebuffer(fbo);
+  if (tex) gl.deleteTexture(tex);
+}
+
+function ensureSharpTargets(w, h) {
+  const gl = sharp.gl;
+  if (sharp.midTex && sharp.historyTex[0] && sharp.historyTex[1]
+      && sharp.texW === w && sharp.texH === h) {
+    return true;
+  }
+  deleteColorTarget(gl, sharp.midTex, sharp.fbo);
+  deleteColorTarget(gl, sharp.historyTex[0], sharp.historyFbo[0]);
+  deleteColorTarget(gl, sharp.historyTex[1], sharp.historyFbo[1]);
+  sharp.midTex = null;
+  sharp.fbo = null;
+  sharp.historyTex = [null, null];
+  sharp.historyFbo = [null, null];
+
+  const mid = makeColorTarget(gl, w, h);
+  const historyA = makeColorTarget(gl, w, h);
+  const historyB = makeColorTarget(gl, w, h);
+  if (!mid || !historyA || !historyB) {
+    if (mid) deleteColorTarget(gl, mid.tex, mid.fbo);
+    if (historyA) deleteColorTarget(gl, historyA.tex, historyA.fbo);
+    if (historyB) deleteColorTarget(gl, historyB.tex, historyB.fbo);
     sharp.unavailable = true;
     return false;
   }
-  sharp.midTex = tex;
-  sharp.fbo = fbo;
+  sharp.midTex = mid.tex;
+  sharp.fbo = mid.fbo;
+  sharp.historyTex = [historyA.tex, historyB.tex];
+  sharp.historyFbo = [historyA.fbo, historyB.fbo];
   sharp.texW = w;
   sharp.texH = h;
+  sharp.historyIndex = 0;
+  sharp.historyValid = false;
   return true;
 }
 
@@ -648,11 +741,36 @@ function drawSharp() {
   gl.uniform4fv(sharp.u.con0, con.con0);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
+  let postTex = sharp.midTex;
+  if (sharp.grade.temporal > 0) {
+    const write = sharp.historyIndex ^ 1;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, sharp.historyFbo[write]);
+    gl.viewport(0, 0, w, h);
+    gl.useProgram(sharp.temporalProgram);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, sharp.midTex);
+    gl.uniform1i(sharp.u.tmpCurrent, 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, sharp.historyTex[sharp.historyIndex]);
+    gl.uniform1i(sharp.u.tmpHistory, 1);
+    gl.uniform2i(sharp.u.tmpSize, w, h);
+    gl.uniform1f(sharp.u.tmpWeight, sharp.grade.temporal);
+    gl.uniform1i(sharp.u.tmpValid, sharp.historyValid ? 1 : 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    sharp.historyIndex = write;
+    sharp.historyValid = true;
+    postTex = sharp.historyTex[write];
+  } else {
+    // Re-enabling temporal must not blend against frames from before it was
+    // switched off.
+    sharp.historyValid = false;
+  }
+
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.viewport(0, 0, w, h);
   gl.useProgram(sharp.rcasProgram);
   gl.activeTexture(gl.TEXTURE0);
-  gl.bindTexture(gl.TEXTURE_2D, sharp.midTex);
+  gl.bindTexture(gl.TEXTURE_2D, postTex);
   gl.uniform1i(sharp.u.rcasTex, 0);
   gl.activeTexture(gl.TEXTURE1);
   gl.bindTexture(gl.TEXTURE_2D, sharp.lutTex);
@@ -708,6 +826,7 @@ function persistPicture() {
     localStorage.setItem("psrp.brightness", String(colorAmount(brightnessInput)));
     localStorage.setItem("psrp.contrast", String(colorAmount(contrastInput)));
     localStorage.setItem("psrp.saturation", String(colorAmount(saturationInput)));
+    localStorage.setItem("psrp.temporal", String(temporalAmount()));
   } catch {}
 }
 
@@ -724,13 +843,15 @@ function bindPictureSlider(input) {
   input.addEventListener("change", persistPicture);
 }
 
-[sharpnessInput, brightnessInput, contrastInput, saturationInput].forEach(bindPictureSlider);
+[sharpnessInput, brightnessInput, contrastInput, saturationInput, temporalInput]
+  .forEach(bindPictureSlider);
 
 pictureReset.addEventListener("click", () => {
   sharpnessInput.value = String(PICTURE_DEFAULTS.sharpness);
   brightnessInput.value = String(PICTURE_DEFAULTS.brightness);
   contrastInput.value = String(PICTURE_DEFAULTS.contrast);
   saturationInput.value = String(PICTURE_DEFAULTS.saturation);
+  temporalInput.value = String(PICTURE_DEFAULTS.temporal);
   persistPicture();
   applyPicture();
 });
@@ -754,6 +875,7 @@ pictureReset.addEventListener("click", () => {
   load(brightnessInput, "psrp.brightness", PICTURE_DEFAULTS.brightness);
   load(contrastInput, "psrp.contrast", PICTURE_DEFAULTS.contrast);
   load(saturationInput, "psrp.saturation", PICTURE_DEFAULTS.saturation);
+  load(temporalInput, "psrp.temporal", PICTURE_DEFAULTS.temporal);
   applyPicture();
 })();
 
@@ -774,10 +896,14 @@ sharpCanvas.addEventListener("webglcontextlost", (event) => {
   event.preventDefault();
   sharp.gl = null;
   sharp.easuProgram = null;
+  sharp.temporalProgram = null;
   sharp.rcasProgram = null;
   sharp.inputTex = null;
   sharp.midTex = null;
   sharp.fbo = null;
+  sharp.historyTex = [null, null];
+  sharp.historyFbo = [null, null];
+  sharp.historyValid = false;
   sharp.lutTex = null;
   sharp.texW = 0;
   sharp.texH = 0;
