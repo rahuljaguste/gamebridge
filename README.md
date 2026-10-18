@@ -28,12 +28,15 @@ AGPL-3.0-only; see [Licensing](#licensing).
 - Takion transport: handshake, RPCrypt/GKCrypt, GMAC, reordering, retransmit
 - H.264 video and Opus audio with Reed–Solomon FEC, gap detection, and IDR resync
 - WebRTC delivery with non-trickle ICE (localhost)
-- Gamepad, keyboard/mouse, and touch input; rumble events; packet stats
+- Gamepad, keyboard/mouse, and touch input; rumble events; latency and packet
+  stats. Latency is the round-trip time to the console: measured by Senkusha at
+  stream start, then updated from the console's own connection-quality reports.
 - Demo mode that streams a local H.264 file with no console attached
 
 Deferred/unsupported (see [Limitations](#limitations)): H.265/HDR, Senkusha
 (PS5 cloud), DualSense haptics and adaptive triggers, keyboard text entry,
-multi-controller, and LAN access.
+multi-controller, and authenticated remote access (`--allow-remote` exposes the
+API without authentication).
 
 ## Requirements
 
@@ -59,11 +62,16 @@ cargo build --release
 
 Then open <http://127.0.0.1:8080/>.
 
+The server handles both `Ctrl+C` and `SIGTERM`. If a session is active, it asks
+the console to stop before exiting, which matters when it runs under systemd,
+launchd, or a Docker stop.
+
 Options:
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--bind <addr>` | `127.0.0.1:8080` | Address for the web UI. Keep it on localhost unless you understand the risk; there is no authentication. |
+| `--bind <addr>` | `127.0.0.1:8080` | Address for the web UI. Non-loopback addresses are refused unless `--allow-remote` is also given. |
+| `--allow-remote` | off | Permit a non-loopback bind. The API and stream control have no authentication. |
 | `--config-dir <dir>` | platform config dir | Override where `hosts.json` is stored. |
 | `--demo-file <file>` | — | Enable the demo endpoint with a local Annex-B H.264 stream. |
 | `--log-file <path>` | `<config dir>/server.log` | Also write logs to this file (stderr always gets them too). |
@@ -119,17 +127,32 @@ live.
   1080p; try 20000–30000 for 1080p. Higher bitrate preserves detail and motion
   sharpness at the cost of Wi-Fi/network bandwidth. Leave the field empty to
   use the preset value.
-- **Sharpness** (0–100, default 35) runs a WebGL2 contrast-adaptive sharpening
-  pass over the received video in the browser. It adds no bandwidth; set it to
-  0 to bypass it and display the WebRTC video directly. The value is stored per
-  browser.
+- **Sharpness** (0–100, default 35) runs a two-pass WebGL2 post-process over
+  the received video: FSR 1 **EASU** reconstructs the frame at the display's
+  native pixel grid (up to a 4K target), then **RCAS** sharpens it in linear
+  light. It adds no bandwidth and works on any GPU, including integrated and
+  Apple Silicon. Set it to 0 to disable sharpening; the color controls below
+  still apply.
+- **Brightness / Contrast / Saturation** (each −100–100; defaults +15/+20/+20)
+  are graded in linear light inside the same pass. Brightness is exposure in
+  ±1.5 EV, contrast pivots around middle gray, and saturation mixes around
+  Rec.709 luma. **Reset picture** restores the defaults. Set every picture
+  control to neutral (Sharpness 0, Brightness/Contrast/Saturation 0) to bypass
+  the post-process entirely and display the WebRTC video directly. All values
+  are stored per browser.
 - Sharpening cannot recover detail the console encoder discarded — pair it with
   a suitable bitrate. Resolution and FPS are encoded on the console.
 
 ## Configuration and privacy
 
-- The server binds to `127.0.0.1` by default. There is no token or TLS, so do
-  not bind it to a LAN or public interface.
+- The server binds to `127.0.0.1` by default and refuses a non-loopback bind
+  unless `--allow-remote` is passed. There is no token or TLS, so only enable
+  that on a network you trust.
+- Loopback alone is not an origin boundary, so every request must carry a
+  loopback `Host` (plus the bind address if you deliberately bind elsewhere).
+  When a browser sends `Origin`, it must be this server's own loopback origin.
+  This blocks cross-site WebSocket control and DNS-rebinding attacks against
+  the JSON API.
 - Console regist keys and keys are stored locally in `hosts.json`. Treat that
   file as a credential.
 - Streaming, registration, and discovery traffic goes only to the console
@@ -188,6 +211,11 @@ that exercises session → ctrl → Takion → encryption → launch spec → st
 - **Keyboard text entry** from the console is consumed but not surfaced in the
   browser.
 - **One active session** at a time and **localhost only**; no multiuser auth.
+  A started session waits 30 seconds for the browser's WebRTC peer and stops
+  itself if it never connects (for example, if the tab died before answering).
+- Release builds use `panic = "abort"`: an unexpected panic in any task ends
+  the whole bridge rather than leaving a half-working stream. Run it under a
+  process supervisor for unattended use; `SIGTERM` shuts down cleanly.
 - The PSN sign-in helper uses Sony's legacy Remote Play OAuth client and may
   stop working if Sony changes those endpoints, just like Chiaki's helper.
 - Video is forwarded as complete access units; a lost slice or a frame that
@@ -239,6 +267,10 @@ It is a derivative work of **Chiaki v2.2.0** (AGPL-3.0-only-OpenSSL),
 Copyright (C) the Chiaki contributors, and includes protocol structures and
 cryptographic key tables generated from that source. Chiaki:
 <https://git.sr.ht/~thestr4ng3r/chiaki>.
+
+The browser sharpening pass is ported from **AMD FidelityFX Super Resolution
+1.0** (EASU and RCAS), Copyright (c) 2021 Advanced Micro Devices, Inc.,
+released under the MIT licence. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 If you run a modified version of this program as a network service, the AGPL
 requires you to offer users the corresponding source code.

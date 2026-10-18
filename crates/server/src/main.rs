@@ -11,6 +11,8 @@ mod webrtc;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -27,6 +29,10 @@ struct Args {
     /// Address to serve the web UI on (localhost only by default).
     #[arg(long, default_value = "127.0.0.1:8080")]
     bind: SocketAddr,
+
+    /// Allow binding to a non-loopback address. There is no authentication.
+    #[arg(long)]
+    allow_remote: bool,
 
     /// Override the configuration directory.
     #[arg(long)]
@@ -105,8 +111,22 @@ async fn main() -> Result<()> {
     init_tracing(&log_path);
     tracing::info!("configuration: {}", store.path().display());
     tracing::info!("log file: {}", log_path.display());
+    if !args.bind.ip().is_loopback() {
+        if !args.allow_remote {
+            anyhow::bail!(
+                "refusing to bind {}: the bridge is localhost-only and has no authentication; \
+                 pass --allow-remote to override",
+                args.bind
+            );
+        }
+        tracing::warn!(
+            "binding {} exposes an unauthenticated Remote Play bridge to the network",
+            args.bind
+        );
+    }
     let state = AppState::new(store, args.demo_file.clone());
-    let app = routes::router(state);
+    let shutdown_state = state.clone();
+    let app = routes::router(state, args.bind, args.allow_remote);
 
     let listener = tokio::net::TcpListener::bind(args.bind)
         .await
@@ -119,13 +139,65 @@ async fn main() -> Result<()> {
     println!();
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(shutdown_state))
         .await
         .context("server error")?;
     Ok(())
 }
 
-async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+async fn shutdown_signal(state: Arc<AppState>) {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => tracing::info!("received Ctrl+C"),
+                    _ = sigterm.recv() => tracing::info!("received SIGTERM"),
+                }
+            }
+            Err(e) => {
+                tracing::warn!("could not listen for SIGTERM: {e}");
+                let _ = tokio::signal::ctrl_c().await;
+                tracing::info!("received Ctrl+C");
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        tracing::info!("received Ctrl+C");
+    }
+
     tracing::info!("shutting down");
+    stop_active_session(&state).await;
+}
+
+/// Ask the session manager to stop before the runtime is torn down, giving it
+/// time to send the console a graceful Remote Play stop.
+async fn stop_active_session(state: &AppState) {
+    {
+        let mut active = state.active.lock().await;
+        let Some(session) = active.as_mut() else {
+            return;
+        };
+        tracing::info!("stopping the active session");
+        // `/api/session/stop` may already have taken the sender. Waiting for
+        // `active` to clear still covers that path; returning early would let
+        // the runtime abort the manager mid-cleanup.
+        if let Some(stop) = session.stop_tx.take() {
+            let _ = stop.send(());
+        }
+    }
+
+    // The manager may spend 5 s waiting for the supervisor, then close the
+    // peer and run `Session::stop` (3 s). Allow for that before giving up.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while tokio::time::Instant::now() < deadline {
+        if state.active.lock().await.is_none() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    tracing::warn!("active session did not stop within 15 s");
 }

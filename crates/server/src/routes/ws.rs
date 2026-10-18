@@ -17,6 +17,16 @@ pub async fn ws_handler(State(state): State<Arc<AppState>>, ws: WebSocketUpgrade
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
+/// Keeps the session manager's browser-presence count accurate on every exit
+/// path, including a failed send or a panic while unwinding.
+struct WsClientGuard(Arc<AppState>);
+
+impl Drop for WsClientGuard {
+    fn drop(&mut self) {
+        self.0.ws_client_disconnected();
+    }
+}
+
 async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     let (input, commands, session_id) = {
         let active = state.active.lock().await;
@@ -38,7 +48,9 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
             }
         }
     };
-    let mut events = state.subscribe();
+    let (mut events, replay) = state.subscribe_with_replay();
+    state.ws_client_connected();
+    let _client = WsClientGuard(state.clone());
     let _ = socket
         .send(Message::Text(
             serde_json::to_string(&ServerEvent::SessionStarted { session_id })
@@ -46,6 +58,16 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                 .into(),
         ))
         .await;
+    // Replay what happened while the browser was gathering ICE candidates,
+    // notably a PIN request or the current phase.
+    for event in replay {
+        let Ok(text) = serde_json::to_string(&event) else {
+            continue;
+        };
+        if socket.send(Message::Text(text.into())).await.is_err() {
+            return;
+        }
+    }
 
     loop {
         tokio::select! {
@@ -58,7 +80,10 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                             break;
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!("browser event stream lagged by {skipped} events");
+                        continue;
+                    }
                     Err(_) => break,
                 }
             }
@@ -66,10 +91,10 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                 let Some(Ok(message)) = message else { break };
                 match message {
                     Message::Text(text) => {
-                        if !handle_client_message(text.as_str(), &input, &commands) {
+                        if let Err(message) = handle_client_message(text.as_str(), &input, &commands) {
                             let _ = socket
                                 .send(Message::Text(
-                                    serde_json::json!({"type":"error","message":"invalid message"})
+                                    serde_json::json!({"type":"error","message":message})
                                         .to_string()
                                         .into(),
                                 ))
@@ -127,13 +152,20 @@ fn touch_up() -> i8 {
     -1
 }
 
+/// Apply one browser message. The error text is shown to the user, so a
+/// malformed message is distinguished from a command the session can't take.
 fn handle_client_message(
     text: &str,
     input: &tokio::sync::watch::Sender<ControllerState>,
     commands: &tokio::sync::mpsc::Sender<SessionCommand>,
-) -> bool {
+) -> Result<(), &'static str> {
     let Ok(message) = serde_json::from_str::<ClientMessage>(text) else {
-        return false;
+        return Err("invalid message");
+    };
+    let send = |command: SessionCommand| {
+        commands
+            .try_send(command)
+            .map_err(|_| "session is not accepting commands")
     };
     match message {
         ClientMessage::Input {
@@ -162,13 +194,11 @@ fn handle_client_message(
                 };
             }
             let _ = input.send(state);
-            true
+            Ok(())
         }
-        ClientMessage::Pin { pin } => commands
-            .try_send(SessionCommand::SubmitPin(pin.into_bytes()))
-            .is_ok(),
-        ClientMessage::Keyframe => commands.try_send(SessionCommand::RequestKeyframe).is_ok(),
-        ClientMessage::GotoBed => commands.try_send(SessionCommand::GotoBed).is_ok(),
-        ClientMessage::Stop => commands.try_send(SessionCommand::Stop).is_ok(),
+        ClientMessage::Pin { pin } => send(SessionCommand::SubmitPin(pin.into_bytes())),
+        ClientMessage::Keyframe => send(SessionCommand::RequestKeyframe),
+        ClientMessage::GotoBed => send(SessionCommand::GotoBed),
+        ClientMessage::Stop => send(SessionCommand::Stop),
     }
 }

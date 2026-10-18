@@ -410,7 +410,7 @@ dependencies = [
 
 [[package]]
 name = "chiaki-core"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1469,7 +1469,7 @@ dependencies = [
 
 [[package]]
 name = "ps-remoteplay-server"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1488,7 +1488,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-util",
- "tower-http",
  "tracing",
  "tracing-subscriber",
  "url",
@@ -2640,7 +2639,6 @@ dependencies = [
  "tower",
  "tower-layer",
  "tower-service",
- "tracing",
  "url",
 ]
 

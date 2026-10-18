@@ -282,6 +282,9 @@ async fn run_inner(
             quit_reason: QuitReason::StreamConnectionUnknown,
             reason_str: None,
         };
+        // The console reports either seconds or milliseconds, consistently for
+        // a session; decide from the first valid sample and keep that unit.
+        let mut rtt_seconds = None;
 
         loop {
             tokio::select! {
@@ -304,16 +307,38 @@ async fn run_inner(
                     };
                     match event {
                         TakionEvent::MessageData { data_type: 0, payload } => {
-                            if let Ok(Some(reason)) = protobuf::parse_disconnect_reason(&payload) {
-                                tracing::info!("console disconnected: {reason}");
-                                let _ = events.send(SessionEvent::RemoteDisconnect { reason: reason.clone() });
-                                outcome.reason_str = Some(reason.clone());
-                                outcome.quit_reason = if reason == "Server shutting down" {
-                                    QuitReason::StreamConnectionRemoteShutdown
-                                } else {
-                                    QuitReason::StreamConnectionRemoteDisconnected
-                                };
-                                break;
+                            match protobuf::message_type(&payload) {
+                                Ok(protobuf::TYPE_DISCONNECT) => {
+                                    if let Ok(Some(reason)) = protobuf::parse_disconnect_reason(&payload) {
+                                        tracing::info!("console disconnected: {reason}");
+                                        let _ = events.send(SessionEvent::RemoteDisconnect { reason: reason.clone() });
+                                        outcome.reason_str = Some(reason.clone());
+                                        outcome.quit_reason = if reason == "Server shutting down" {
+                                            QuitReason::StreamConnectionRemoteShutdown
+                                        } else {
+                                            QuitReason::StreamConnectionRemoteDisconnected
+                                        };
+                                        break;
+                                    }
+                                }
+                                Ok(protobuf::TYPE_CONNECTIONQUALITY) => {
+                                    match protobuf::parse_connection_quality(&payload) {
+                                        Ok(quality) => {
+                                            if let Some(rtt_ms) = quality.rtt_ms(&mut rtt_seconds) {
+                                                tracing::debug!(
+                                                    raw = ?quality.rtt,
+                                                    rtt_ms,
+                                                    "stream: console connection quality"
+                                                );
+                                                let _ = events.send(SessionEvent::ConnectionQuality { rtt_ms });
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::debug!("stream: invalid connection quality: {e}");
+                                        }
+                                    }
+                                }
+                                _ => {}
                             }
                         }
                         TakionEvent::MessageData { data_type: 7, payload } => {
@@ -366,10 +391,10 @@ async fn run_inner(
                 command = commands.recv() => {
                     match command {
                         Some(StreamCommand::RequestKeyframe) => {
-                            let _ = takion.commands.try_send(TakionCommand::SendCorruptFrame {
-                                start: 0,
-                                end: u16::MAX,
-                            });
+                            tracing::info!("stream: requesting IDR frame");
+                            if takion.commands.send(TakionCommand::RequestIdr).await.is_err() {
+                                tracing::warn!("stream: failed to queue IDR request");
+                            }
                         }
                         Some(StreamCommand::Stop) | None => {
                             outcome.quit_reason = QuitReason::Stopped;

@@ -11,7 +11,9 @@ pub const TYPE_CORRUPTFRAME: u32 = 5;
 pub const TYPE_DISCONNECT: u32 = 8;
 pub const TYPE_STREAMINFO: u32 = 13;
 pub const TYPE_STREAMINFOACK: u32 = 14;
+pub const TYPE_CONNECTIONQUALITY: u32 = 16;
 pub const TYPE_CONTROLLERCONNECTION: u32 = 21;
+pub const TYPE_IDRREQUEST: u32 = 25;
 
 pub const CONTROLLER_TYPE_DUALSHOCK4: u32 = 2;
 pub const CONTROLLER_TYPE_DUALSENSE: u32 = 6;
@@ -108,6 +110,15 @@ pub fn encode_corrupt_frame(start: u16, end: u16) -> Vec<u8> {
     msg.finish()
 }
 
+/// Ask the console to emit a fresh IDR. This is the explicit IDRREQUEST
+/// payload (type 25) used by chiaki-ng; reporting a fake corrupt range of
+/// 0..u16::MAX is not reliably answered by the PS5.
+pub fn encode_idr_request() -> Vec<u8> {
+    let mut msg = Writer::new();
+    msg.uint32(1, TYPE_IDRREQUEST);
+    msg.finish()
+}
+
 pub fn message_type(buf: &[u8]) -> Result<u32> {
     let mut r = Reader::new(buf);
     while let Some((field, value)) = r.next_field()? {
@@ -154,6 +165,58 @@ pub fn parse_bang(buf: &[u8]) -> Result<Bang> {
         }
     }
     Ok(bang)
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ConnectionQuality {
+    /// Raw console-reported round-trip time. Firmware differs on the unit;
+    /// see [`ConnectionQuality::rtt_ms`].
+    pub rtt: Option<f64>,
+}
+
+impl ConnectionQuality {
+    pub fn raw_rtt(self) -> Option<f64> {
+        self.rtt.filter(|rtt| rtt.is_finite() && *rtt > 0.0)
+    }
+
+    /// Normalize the console's `double rtt` to milliseconds. WebRTC-style
+    /// implementations report seconds; PS5 firmware has also been observed
+    /// sending milliseconds. The unit is chosen from the first valid sample
+    /// and kept for the session, so a later 1.5 s reading is still rendered as
+    /// 1500 ms rather than mistaken for 1.5 ms.
+    pub fn rtt_ms(self, seconds: &mut Option<bool>) -> Option<f64> {
+        let raw = self.raw_rtt()?;
+        let use_seconds = *seconds.get_or_insert(raw <= 1.0);
+        Some(if use_seconds { raw * 1000.0 } else { raw })
+    }
+}
+
+pub fn parse_connection_quality(buf: &[u8]) -> Result<ConnectionQuality> {
+    let mut outer = Reader::new(buf);
+    let mut payload = None;
+    while let Some((field, value)) = outer.next_field()? {
+        match field {
+            1 => {
+                if as_u32(value)? != TYPE_CONNECTIONQUALITY {
+                    return Err(Error::InvalidData);
+                }
+            }
+            17 => payload = Some(as_bytes(value)?.to_vec()),
+            _ => {}
+        }
+    }
+    let payload = payload.ok_or(Error::InvalidData)?;
+    let mut r = Reader::new(&payload);
+    let mut quality = ConnectionQuality::default();
+    while let Some((field, value)) = r.next_field()? {
+        if field == 5 {
+            let Value::Fixed64(bytes) = value else {
+                return Err(Error::InvalidData);
+            };
+            quality.rtt = Some(f64::from_le_bytes(bytes));
+        }
+    }
+    Ok(quality)
 }
 
 pub fn parse_stream_info(buf: &[u8]) -> Result<StreamInfo> {
@@ -255,11 +318,68 @@ pub fn parse_trigger_effects(buf: &[u8]) -> Option<([u8; 10], [u8; 10], u8, u8)>
     Some((left, right, buf[1], buf[2]))
 }
 
-/// Helper used by tests and diagnostics.
-pub fn first_varint(buf: &[u8]) -> Result<u32> {
-    let mut r = Reader::new(buf);
-    match r.next_field()? {
-        Some((1, Value::Varint(v))) => Ok(v as u32),
-        _ => Err(Error::InvalidData),
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idr_request_is_payload_type_25() {
+        assert_eq!(encode_idr_request(), vec![0x08, 0x19]);
+    }
+
+    #[test]
+    fn corrupt_frame_encodes_range() {
+        assert_eq!(
+            encode_corrupt_frame(1, 2),
+            vec![0x08, 0x05, 0x32, 0x04, 0x08, 0x01, 0x10, 0x02]
+        );
+    }
+
+    #[test]
+    fn parses_connection_quality_rtt() {
+        let mut inner = vec![0x29]; // field 5, wire type 1 (double)
+        inner.extend_from_slice(&12.5f64.to_le_bytes());
+        let mut msg = vec![0x08, 0x10, 0x8a, 0x01, inner.len() as u8];
+        msg.extend_from_slice(&inner);
+
+        let quality = parse_connection_quality(&msg).unwrap();
+        assert_eq!(quality.rtt, Some(12.5));
+        let mut unit = None;
+        assert_eq!(quality.rtt_ms(&mut unit), Some(12.5));
+    }
+
+    #[test]
+    fn connection_quality_unit_is_sticky() {
+        let mut seconds = None;
+        assert_eq!(
+            ConnectionQuality { rtt: Some(0.0125) }.rtt_ms(&mut seconds),
+            Some(12.5)
+        );
+        assert_eq!(
+            ConnectionQuality { rtt: Some(1.5) }.rtt_ms(&mut seconds),
+            Some(1500.0)
+        );
+
+        let mut milliseconds = None;
+        assert_eq!(
+            ConnectionQuality { rtt: Some(12.5) }.rtt_ms(&mut milliseconds),
+            Some(12.5)
+        );
+        assert_eq!(
+            ConnectionQuality { rtt: Some(1.5) }.rtt_ms(&mut milliseconds),
+            Some(1.5)
+        );
+
+        assert_eq!(
+            ConnectionQuality {
+                rtt: Some(f64::NAN)
+            }
+            .rtt_ms(&mut milliseconds),
+            None
+        );
+        assert_eq!(
+            ConnectionQuality { rtt: Some(0.0) }.rtt_ms(&mut milliseconds),
+            None
+        );
     }
 }

@@ -299,6 +299,12 @@ pub enum SessionEvent {
         incorrect: bool,
     },
     Connected,
+    /// Round-trip time to the console, normalized to milliseconds. Sent once
+    /// after Senkusha and again whenever the console reports connection
+    /// quality during the stream.
+    ConnectionQuality {
+        rtt_ms: f64,
+    },
     StreamInfo {
         profiles: Vec<VideoProfileInfo>,
         audio: AudioFormat,
@@ -463,6 +469,17 @@ impl Session {
         let _ = self.commands.send(SessionCommand::Stop).await;
         self.cancel.cancel();
         let _ = timeout(Duration::from_secs(3), &mut self.join).await;
+        self.join.abort();
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        // A dropped session must never leave its supervisor (and the console
+        // ctrl/Takion connections it owns) running. `stop` is the graceful
+        // path; this is the safety net for setup errors and losing a start
+        // race, where the session would otherwise keep the console busy.
+        self.cancel.cancel();
         self.join.abort();
     }
 }
@@ -677,6 +694,7 @@ async fn run_supervisor(
     let mut mtu_in = 1454u32;
     let mut mtu_out = 1454u32;
     let mut rtt_us = 1000u64;
+    let mut measured_rtt_ms = None;
     if options.senkusha {
         let senkusha = tokio::select! {
             _ = cancel.cancelled() => finish!(QuitReason::Stopped, None, None),
@@ -690,6 +708,7 @@ async fn run_supervisor(
                 mtu_in = result.mtu_in;
                 mtu_out = result.mtu_out;
                 rtt_us = result.rtt_us;
+                measured_rtt_ms = Some(result.rtt_us as f64 / 1000.0);
                 tracing::info!("senkusha: mtu_in={mtu_in} mtu_out={mtu_out} rtt={rtt_us}us");
             }
             Ok(Err(e)) => {
@@ -699,6 +718,9 @@ async fn run_supervisor(
                 tracing::warn!("senkusha timed out; using fallback MTU/RTT");
             }
         }
+    }
+    if let Some(rtt_ms) = measured_rtt_ms {
+        let _ = events.send(SessionEvent::ConnectionQuality { rtt_ms });
     }
     let rtt_ms = (rtt_us / 1000) as u32;
     // The launch spec advertises mtu_in; Takion message fragmentation uses the

@@ -25,18 +25,23 @@ use crate::webrtc::{self, MediaShared};
 pub async fn start(
     State(state): State<Arc<AppState>>,
 ) -> std::result::Result<Json<StartResponse>, ApiError> {
+    let start = state
+        .begin_start()
+        .ok_or_else(|| ApiError::conflict("a session is already active"))?;
     {
         let active = state.active.lock().await;
         if active.is_some() {
             return Err(ApiError::conflict("a session is already active"));
         }
     }
+    state.clear_replay();
     *state.last_session_error.lock().await = None;
     let path: PathBuf = state
         .demo_file
         .clone()
         .ok_or_else(|| ApiError::bad_request("demo mode was not enabled"))?;
-    let data = std::fs::read(&path)
+    let data = tokio::fs::read(&path)
+        .await
         .with_context(|| format!("failed to read {}", path.display()))
         .map_err(|e| ApiError::internal(e.to_string()))?;
     let access_units = split_access_units(&data);
@@ -67,10 +72,13 @@ pub async fn start(
     {
         let mut slot = state.active.lock().await;
         if slot.is_some() {
+            drop(slot);
+            let _ = peers.peer.close().await;
             return Err(ApiError::conflict("a session is already active"));
         }
         *slot = Some(active);
     }
+    start.disarm();
 
     tokio::spawn(run(
         state,
@@ -100,7 +108,7 @@ async fn run(
     shared: Arc<MediaShared>,
     access_units: Vec<Bytes>,
     _input_rx: watch::Receiver<ControllerState>,
-    mut _cmd_rx: mpsc::Receiver<SessionCommand>,
+    mut cmd_rx: mpsc::Receiver<SessionCommand>,
     mut stop_rx: oneshot::Receiver<()>,
 ) {
     let connected = peers.connected.clone();
@@ -115,20 +123,36 @@ async fn run(
         *shared.param_sets.lock().unwrap() = param_sets;
     }
 
-    // Wait briefly for the browser to connect.
+    // Wait briefly for the browser to connect. Every exit from here must clear
+    // the active slot, otherwise the UI keeps receiving "session already
+    // active" until the server is restarted.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut stopped = false;
     while !connected.load(Ordering::Relaxed) {
         if tokio::time::Instant::now() >= deadline {
-            let _ = peers.peer.close().await;
+            finish(&state, id, &peers, "browser did not connect").await;
             return;
         }
         tokio::select! {
             _ = &mut stop_rx => {
-                let _ = peers.peer.close().await;
-                return;
+                stopped = true;
+                break;
+            }
+            command = cmd_rx.recv() => {
+                match command {
+                    Some(SessionCommand::Stop) | None => {
+                        stopped = true;
+                        break;
+                    }
+                    Some(_) => {}
+                }
             }
             _ = tokio::time::sleep(Duration::from_millis(25)) => {}
         }
+    }
+    if stopped {
+        finish(&state, id, &peers, "demo stream stopped").await;
+        return;
     }
 
     let mut index = first_idr;
@@ -162,6 +186,12 @@ async fn run(
         }
         tokio::select! {
             _ = &mut stop_rx => break,
+            command = cmd_rx.recv() => {
+                match command {
+                    Some(SessionCommand::Stop) | None => break,
+                    Some(_) => {}
+                }
+            }
             _ = tokio::time::sleep(Duration::from_millis(33)) => {}
         }
         index += 1;
@@ -170,15 +200,23 @@ async fn run(
         }
     }
 
-    let _ = peers.peer.close().await;
-    let _ = state.events.send(ServerEvent::Quit {
+    finish(&state, id, &peers, "demo stream stopped").await;
+}
+
+async fn finish(state: &AppState, id: Uuid, peers: &webrtc::PeerHandles, detail: &str) {
+    state.publish(ServerEvent::Quit {
         reason: "Stopped".to_string(),
-        reason_string: Some("demo stream stopped".to_string()),
+        reason_string: Some(detail.to_string()),
     });
-    let mut active = state.active.lock().await;
-    if active.as_ref().map(|a| a.id) == Some(id) {
-        *active = None;
+    {
+        // Release the slot before awaiting the peer shutdown so a stuck
+        // transport can never leave the UI permanently "already active".
+        let mut active = state.active.lock().await;
+        if active.as_ref().map(|a| a.id) == Some(id) {
+            *active = None;
+        }
     }
+    let _ = peers.peer.close().await;
 }
 
 fn start_code_len(data: &[u8], i: usize) -> Option<usize> {

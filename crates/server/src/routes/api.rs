@@ -21,7 +21,7 @@ use rtc::peer_connection::sdp::RTCSessionDescription;
 use crate::config::{StoredHost, parse_target, target_string};
 use crate::manager;
 use crate::psn;
-use crate::state::{ActiveSession, AppState, ServerEvent};
+use crate::state::{ActiveSession, AppState};
 use crate::webrtc::{self, MediaShared};
 
 pub struct ApiError {
@@ -300,12 +300,18 @@ pub async fn start_session(
     State(state): State<Arc<AppState>>,
     Json(request): Json<StartRequest>,
 ) -> Result<Json<StartResponse>, ApiError> {
+    // Hold the reservation for the whole setup so a double-click cannot start
+    // two console sessions before either reaches the `active` check.
+    let start = state
+        .begin_start()
+        .ok_or_else(|| ApiError::conflict("a session is already active"))?;
     {
         let active = state.active.lock().await;
         if active.is_some() {
             return Err(ApiError::conflict("a session is already active"));
         }
     }
+    state.clear_replay();
     *state.last_session_error.lock().await = None;
     let host = state
         .config
@@ -327,6 +333,9 @@ pub async fn start_session(
         60 => Fps::Fps60,
         _ => return Err(ApiError::bad_request("FPS must be 30 or 60")),
     };
+    // The console encodes at this nominal rate, so RTP timestamps step by
+    // exactly 1/fps regardless of network jitter.
+    let frame_duration = Duration::from_secs_f64(1.0 / request.fps as f64);
     let mut video =
         VideoProfile::preset(resolution, fps).map_err(|e| ApiError::bad_request(e.to_string()))?;
     if let Some(bitrate) = request.bitrate_kbps {
@@ -378,10 +387,13 @@ pub async fn start_session(
     {
         let mut slot = state.active.lock().await;
         if slot.is_some() {
+            drop(slot);
+            let _ = peers.peer.close().await;
             return Err(ApiError::conflict("a session is already active"));
         }
         *slot = Some(active);
     }
+    start.disarm();
 
     let manager_state = state.clone();
     let manager_peers = peers;
@@ -395,14 +407,12 @@ pub async fn start_session(
             audio_rx,
             manager_peers,
             shared,
+            frame_duration,
             stop_rx,
         )
         .await;
     });
 
-    state.broadcast(ServerEvent::SessionStarted {
-        session_id: id.to_string(),
-    });
     Ok(Json(StartResponse {
         session_id: id.to_string(),
         offer: RtcDescription {
@@ -435,6 +445,7 @@ pub async fn psn_account_id(
 
 #[derive(Debug, Deserialize)]
 pub struct AnswerRequest {
+    pub session_id: String,
     pub sdp: String,
 }
 
@@ -445,7 +456,12 @@ pub async fn answer(
     let peer = {
         let active = state.active.lock().await;
         match active.as_ref() {
-            Some(session) => session.peer.clone(),
+            Some(session) if session.id.to_string() == request.session_id => session.peer.clone(),
+            Some(_) => {
+                return Err(ApiError::conflict(
+                    "answer does not match the active session",
+                ));
+            }
             None => {
                 let last = state.last_session_error.lock().await.clone();
                 return Err(match last {
@@ -487,19 +503,33 @@ pub struct StatusResponse {
 }
 
 pub async fn status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
-    let active = state.active.lock().await;
+    let (active, session_id, host_id, uptime_seconds, peer_connected) = {
+        let slot = state.active.lock().await;
+        match slot.as_ref() {
+            Some(session) => (
+                true,
+                Some(session.id.to_string()),
+                Some(session.host_id.clone()),
+                session.started.elapsed().as_secs(),
+                Some(
+                    session
+                        .peer_connected
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                ),
+            ),
+            None => (false, None, None, 0, None),
+        }
+    };
+    // Drop the session lock before taking the error lock. Other sites use the
+    // same order, but scoping makes the invariant explicit and independent.
+    let last_error = state.last_session_error.lock().await.clone();
     Json(StatusResponse {
-        active: active.is_some(),
-        session_id: active.as_ref().map(|a| a.id.to_string()),
-        host_id: active.as_ref().map(|a| a.host_id.clone()),
-        uptime_seconds: active
-            .as_ref()
-            .map(|a| a.started.elapsed().as_secs())
-            .unwrap_or(0),
-        peer_connected: active
-            .as_ref()
-            .map(|a| a.peer_connected.load(std::sync::atomic::Ordering::Relaxed)),
+        active,
+        session_id,
+        host_id,
+        uptime_seconds,
+        peer_connected,
         demo: state.demo_file.is_some(),
-        last_error: state.last_session_error.lock().await.clone(),
+        last_error,
     })
 }
