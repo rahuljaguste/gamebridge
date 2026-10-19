@@ -3,6 +3,26 @@
 All notable changes to Setu are documented here. The project follows semantic
 versioning; it is a Chiaki derivative and remains AGPL-3.0-only.
 
+## [0.4.4] - 2026-10-19
+
+### Added
+
+- **Resync** in the player bar requests a fresh keyframe, so a corrupt or
+  stalled picture can recover without restarting the stream.
+- **Rest mode** in the player bar puts the console to sleep after a
+  confirmation.
+- Adaptive trigger packets are mapped to the Gamepad API's `trigger-rumble`
+  effect when the connected browser and controller support it.
+- Motion controls read `Gamepad.pose` gyro, accelerometer, and orientation
+  data, convert acceleration to g, normalize the orientation, and send it in
+  the input stream. A Settings → Input toggle disables it. Current Chrome does
+  not expose DualSense pose through the Gamepad API, so this path activates
+  only in browsers that provide it.
+
+### Fixed
+
+- Dual-rumble and trigger-rumble promise rejections are caught.
+
 ## [0.4.3] - 2026-10-19
 
 ### Changed
