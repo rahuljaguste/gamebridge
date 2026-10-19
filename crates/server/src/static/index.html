@@ -163,7 +163,16 @@
             <button id="pin-help-btn" class="help-btn" type="button" title="How to find the pairing PIN" aria-label="How to find the pairing PIN" aria-expanded="false" aria-controls="pin-help">?</button>
           </div>
           <div class="field-row">
-            <input id="reg-pin" name="pin" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="12345678" required>
+            <div class="pin-field">
+              <input id="reg-pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="12345678" autocomplete="off" required>
+              <button id="reg-pin-reveal" class="pin-reveal" type="button" aria-label="Show PIN" aria-pressed="false" aria-controls="reg-pin" title="Show PIN">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M2.6 12s3.5-6 9.4-6 9.4 6 9.4 6-3.5 6-9.4 6S2.6 12 2.6 12Z"/>
+                  <circle cx="12" cy="12" r="2.5"/>
+                  <path class="pin-reveal-slash" d="M4 4l16 16"/>
+                </svg>
+              </button>
+            </div>
             <button id="reg-pin-clear" class="secondary small" type="button">Clear</button>
           </div>
           <div id="pin-help" class="field-help hidden">
@@ -350,7 +359,16 @@
     <h2 id="pin-title">Enter the PIN</h2>
     <p id="pin-text" class="muted">The console is asking for its login PIN. Enter the PIN shown on your console.</p>
     <form id="pin-form">
-      <input id="pin-input" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="PIN" autocomplete="off" required>
+      <div class="pin-field">
+        <input id="pin-input" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="PIN" autocomplete="off" aria-label="Console PIN" required>
+        <button id="pin-reveal" class="pin-reveal" type="button" aria-label="Show PIN" aria-pressed="false" aria-controls="pin-input" title="Show PIN">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M2.6 12s3.5-6 9.4-6 9.4 6 9.4 6-3.5 6-9.4 6S2.6 12 2.6 12Z"/>
+            <circle cx="12" cy="12" r="2.5"/>
+            <path class="pin-reveal-slash" d="M4 4l16 16"/>
+          </svg>
+        </button>
+      </div>
       <button id="pin-clear" class="secondary small" type="button">Clear</button>
       <button id="pin-cancel" class="secondary small" type="button">Cancel</button>
       <button class="primary" type="submit">Send PIN</button>
