@@ -133,6 +133,8 @@ enum ClientMessage {
         ry: i16,
         #[serde(default)]
         touches: Vec<TouchMessage>,
+        #[serde(default)]
+        motion: Option<MotionMessage>,
     },
     Pin {
         pin: String,
@@ -150,6 +152,18 @@ struct TouchMessage {
     x: u16,
     #[serde(default)]
     y: u16,
+}
+
+/// Browser GamepadPose data. Angular velocity is rad/s; linear acceleration is
+/// converted to g by the browser side before it is sent.
+#[derive(Debug, Deserialize, Default)]
+struct MotionMessage {
+    #[serde(default)]
+    angular_velocity: [f32; 3],
+    #[serde(default)]
+    linear_acceleration: [f32; 3],
+    #[serde(default)]
+    orientation: [f32; 4],
 }
 
 fn touch_up() -> i8 {
@@ -181,6 +195,7 @@ fn handle_client_message(
             rx,
             ry,
             touches,
+            motion,
         } => {
             let mut state = ControllerState::idle();
             state.buttons = buttons;
@@ -197,6 +212,33 @@ fn handle_client_message(
                     y: touch.y,
                 };
             }
+            if let Some(motion) = motion {
+                let gyro = motion.angular_velocity;
+                let accel = motion.linear_acceleration;
+                let orientation = motion.orientation;
+                if gyro.iter().all(|v| v.is_finite())
+                    && accel.iter().all(|v| v.is_finite())
+                    && orientation.iter().all(|v| v.is_finite())
+                {
+                    state.gyro_x = gyro[0];
+                    state.gyro_y = gyro[1];
+                    state.gyro_z = gyro[2];
+                    state.accel_x = accel[0];
+                    state.accel_y = accel[1];
+                    state.accel_z = accel[2];
+                    let norm = (orientation[0] * orientation[0]
+                        + orientation[1] * orientation[1]
+                        + orientation[2] * orientation[2]
+                        + orientation[3] * orientation[3])
+                        .sqrt();
+                    if norm > 0.1 {
+                        state.orient_x = orientation[0] / norm;
+                        state.orient_y = orientation[1] / norm;
+                        state.orient_z = orientation[2] / norm;
+                        state.orient_w = orientation[3] / norm;
+                    }
+                }
+            }
             let _ = input.send(state);
             Ok(())
         }
@@ -204,5 +246,43 @@ fn handle_client_message(
         ClientMessage::Keyframe => send(SessionCommand::RequestKeyframe),
         ClientMessage::GotoBed => send(SessionCommand::GotoBed),
         ClientMessage::Stop => send(SessionCommand::Stop),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn input_motion_reaches_the_controller_state() {
+        let (input, mut receiver) = tokio::sync::watch::channel(ControllerState::idle());
+        let (commands, _command_receiver) = tokio::sync::mpsc::channel(1);
+        let message = serde_json::json!({
+            "type": "input",
+            "motion": {
+                "angular_velocity": [1.0, 2.0, 3.0],
+                "linear_acceleration": [0.0, 1.0, 0.0],
+                "orientation": [0.0, 0.0, 0.0, 2.0]
+            }
+        });
+        handle_client_message(&message.to_string(), &input, &commands).unwrap();
+        let state = *receiver.borrow_and_update();
+        assert_eq!(state.gyro_x, 1.0);
+        assert_eq!(state.gyro_y, 2.0);
+        assert_eq!(state.gyro_z, 3.0);
+        assert!((state.accel_y - 1.0).abs() < 1e-6);
+        assert_eq!(state.orient_w, 1.0);
+        assert_eq!(state.orient_x, 0.0);
+    }
+
+    #[tokio::test]
+    async fn input_without_motion_keeps_the_idle_sensor_state() {
+        let (input, mut receiver) = tokio::sync::watch::channel(ControllerState::idle());
+        let (commands, _command_receiver) = tokio::sync::mpsc::channel(1);
+        handle_client_message(r#"{"type":"input"}"#, &input, &commands).unwrap();
+        let state = *receiver.borrow_and_update();
+        assert_eq!(state.accel_y, 1.0);
+        assert_eq!(state.orient_w, 1.0);
+        assert_eq!(state.gyro_x, 0.0);
     }
 }

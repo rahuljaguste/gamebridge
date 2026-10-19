@@ -110,6 +110,8 @@
         </div>
         <div class="player-actions">
           <button id="settings-btn" class="player-btn" type="button">Settings</button>
+          <button id="resync-btn" class="player-btn" type="button" title="Request a fresh keyframe from the console">Resync</button>
+          <button id="rest-btn" class="player-btn" type="button" title="Put the console into Rest Mode">Rest mode</button>
           <button id="fullscreen-btn" class="player-btn" type="button">Fullscreen</button>
           <button id="stop-btn" class="player-btn danger" type="button" disabled>Stop</button>
         </div>
@@ -323,6 +325,11 @@
           DualSense feedback (experimental)
         </label>
         <p class="hint">May make the console's streaming server unstable after repeated sessions.</p>
+        <label class="check">
+          <input id="opt-motion" type="checkbox" checked>
+          Motion controls (experimental)
+        </label>
+        <p class="hint">Uses gamepad pose data when the browser exposes it. Current Chrome does not expose DualSense gyro/accelerometer through the Gamepad API.</p>
         <details class="legend">
           <summary>Keyboard and controller</summary>
           <div class="legend-grid">

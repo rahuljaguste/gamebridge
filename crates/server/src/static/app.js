@@ -82,6 +82,8 @@ const state = {
   iceRestarting: false,
   iceAttempts: 0,
   iceGaveUp: false,
+  triggerEffectTimer: null,
+  triggerEffect: { left: 0, right: 0 },
 };
 
 // Console PINs are masked by default, with an explicit local reveal toggle.
@@ -2096,6 +2098,7 @@ function handleServerEvent(event) {
       vibrate(event.left, event.right);
       break;
     case "trigger_effects":
+      applyTriggerEffects(event.left, event.right);
       break;
     case "stats":
       packetCount = { received: event.received, lost: event.lost };
@@ -2222,6 +2225,7 @@ async function cleanupSession(resetUi) {
   state.iceAttempts = 0;
   state.iceGaveUp = false;
   state.wsRetryDelay = 500;
+  clearTriggerEffects();
   const ws = state.ws;
   state.ws = null;
   if (ws) {
@@ -2315,6 +2319,34 @@ function deadzone(value) {
   return Math.abs(value) < 0.08 ? 0 : value;
 }
 
+function finiteVector(values, length) {
+  if (!values || values.length < length) return null;
+  const out = [];
+  for (let i = 0; i < length; i += 1) {
+    const value = Number(values[i]);
+    if (!Number.isFinite(value)) return null;
+    out.push(value);
+  }
+  return out;
+}
+
+function gamepadMotion(pad) {
+  const pose = pad?.pose;
+  if (!pose) return null;
+  const angular = finiteVector(pose.angularVelocity, 3);
+  const accel = finiteVector(pose.linearAcceleration, 3);
+  if (!angular || !accel) return null;
+  let orientation = finiteVector(pose.orientation, 4) || [0, 0, 0, 1];
+  const norm = Math.hypot(...orientation);
+  if (!Number.isFinite(norm) || norm < 0.1) orientation = [0, 0, 0, 1];
+  return {
+    angular_velocity: angular,
+    // FeedbackState expects acceleration in g; GamepadPose reports m/s².
+    linear_acceleration: accel.map((value) => value / 9.80665),
+    orientation,
+  };
+}
+
 function sendInput() {
   if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
   const buttons = keyboardButtons() | gamepadButtons();
@@ -2354,6 +2386,10 @@ function sendInput() {
     lx, ly, rx, ry,
     touches,
   };
+  if ($("opt-motion").checked) {
+    const motion = gamepadMotion(pad);
+    if (motion) payload.motion = motion;
+  }
   const json = JSON.stringify(payload);
   const now = performance.now();
   if (json === state.lastInputJson && now - state.lastInputAt < 100) return;
@@ -2365,7 +2401,9 @@ function sendInput() {
 function sendWs(payload) {
   if (state.ws && state.ws.readyState === WebSocket.OPEN) {
     state.ws.send(JSON.stringify(payload));
+    return true;
   }
+  return false;
 }
 
 function activeGamepad() {
@@ -2513,11 +2551,76 @@ function vibrate(left, right) {
   const pad = activeGamepad();
   if (!pad || !pad.vibrationActuator) return;
   try {
-    pad.vibrationActuator.playEffect("dual-rumble", {
+    ignorePromiseRejection(pad.vibrationActuator.playEffect("dual-rumble", {
       duration: 120,
       strongMagnitude: Math.min(1, (left || 0) / 255),
       weakMagnitude: Math.min(1, (right || 0) / 255),
-    });
+    }));
+  } catch {}
+}
+
+// Chrome exposes adaptive-trigger packets to the console, but the Gamepad API
+// only gives us a plain trigger-rumble intensity. Map the raw effect strength
+// to that approximation; full DualSense effect modes would need WebHID.
+function triggerIntensity(data) {
+  if (!Array.isArray(data)) return 0;
+  let max = 0;
+  for (const value of data) {
+    if (Number.isFinite(value)) max = Math.max(max, value);
+  }
+  return Math.min(1, max / 255);
+}
+
+function applyTriggerEffects(leftData, rightData) {
+  const left = triggerIntensity(leftData);
+  const right = triggerIntensity(rightData);
+  state.triggerEffect = { left, right };
+  if (state.triggerEffectTimer) {
+    clearInterval(state.triggerEffectTimer);
+    state.triggerEffectTimer = null;
+  }
+  const pad = activeGamepad();
+  const actuator = pad?.vibrationActuator;
+  if (!actuator?.effects?.includes("trigger-rumble")) return;
+  if (!left && !right) {
+    clearTriggerEffects();
+    return;
+  }
+  const fire = () => {
+    const current = activeGamepad()?.vibrationActuator;
+    if (!current?.effects?.includes("trigger-rumble")) return;
+    try {
+      ignorePromiseRejection(current.playEffect("trigger-rumble", {
+        duration: 700,
+        leftTrigger: state.triggerEffect.left,
+        rightTrigger: state.triggerEffect.right,
+      }));
+    } catch {}
+  };
+  fire();
+  // The effect is stateful on the console side. Re-issue it while active so a
+  // static trigger resistance does not expire between console updates.
+  state.triggerEffectTimer = setInterval(fire, 500);
+}
+
+function clearTriggerEffects() {
+  if (state.triggerEffectTimer) {
+    clearInterval(state.triggerEffectTimer);
+    state.triggerEffectTimer = null;
+  }
+  state.triggerEffect = { left: 0, right: 0 };
+  const actuator = activeGamepad()?.vibrationActuator;
+  if (!actuator) return;
+  try {
+    if (typeof actuator.reset === "function") {
+      ignorePromiseRejection(actuator.reset());
+    } else {
+      ignorePromiseRejection(actuator.playEffect("trigger-rumble", {
+        duration: 100,
+        leftTrigger: 0,
+        rightTrigger: 0,
+      }));
+    }
   } catch {}
 }
 
@@ -2575,6 +2678,22 @@ $("pin-clear").addEventListener("click", () => {
 });
 demoBtn.addEventListener("click", startDemo);
 $("stop-btn").addEventListener("click", stopSession);
+$("resync-btn").addEventListener("click", () => {
+  if (!sendWs({ type: "keyframe" })) {
+    toast("Session is not connected", true);
+    return;
+  }
+  toast("Requested a fresh keyframe");
+});
+$("rest-btn").addEventListener("click", () => {
+  if (!confirm("Put the console into Rest Mode? The stream will end.")) return;
+  if (!sendWs({ type: "goto_bed" })) {
+    toast("Session is not connected", true);
+    return;
+  }
+  setStatus("Rest mode", "");
+  toast("Putting the console into Rest Mode…");
+});
 $("fullscreen-btn").addEventListener("click", () => {
   if (document.fullscreenElement) {
     ignorePromiseRejection(document.exitFullscreen());
