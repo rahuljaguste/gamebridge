@@ -83,6 +83,28 @@ const state = {
   iceAttempts: 0,
   iceGaveUp: false,
 };
+
+// Console PINs are masked by default, with an explicit local reveal toggle.
+function setupPinReveal(inputId, buttonId) {
+  const input = $(inputId);
+  const button = $(buttonId);
+  if (!input || !button) return { reset() {} };
+  const setVisible = (visible) => {
+    input.type = visible ? "text" : "password";
+    button.classList.toggle("revealed", visible);
+    button.setAttribute("aria-pressed", String(visible));
+    const label = visible ? "Hide PIN" : "Show PIN";
+    button.setAttribute("aria-label", label);
+    button.title = label;
+  };
+  button.addEventListener("click", () => setVisible(input.type === "password"));
+  setVisible(false);
+  return { reset: () => setVisible(false) };
+}
+
+const regPinReveal = setupPinReveal("reg-pin", "reg-pin-reveal");
+const loginPinReveal = setupPinReveal("pin-input", "pin-reveal");
+
 let detachedTimer = null;
 
 /* ── Sharpening: FSR 1 EASU upscale + gamma-aware RCAS ──────────────────
@@ -1185,6 +1207,7 @@ function openAddConsole({ auto = false } = {}) {
     overlay.classList.add("open");
   }
   closeFieldHelps();
+  regPinReveal.reset();
   if (auto) $("add-drawer").focus({ preventScroll: true });
   else $("reg-host").focus();
   updateContextMessage();
@@ -1197,6 +1220,7 @@ function closeAddConsole({ restoreFocus = true, notify = true } = {}) {
   overlay.setAttribute("aria-hidden", "true");
   overlay.setAttribute("inert", "");
   closeFieldHelps();
+  regPinReveal.reset();
   if (restoreFocus && addReturnFocus && document.contains(addReturnFocus)) {
     addReturnFocus.focus({ preventScroll: true });
   }
@@ -1722,6 +1746,7 @@ $("register-form").addEventListener("submit", async (event) => {
     });
     savePsnAccount($("reg-account").value.trim());
     $("reg-pin").value = "";
+    regPinReveal.reset();
     toast("Console added");
     closeAddConsole();
     await loadHosts();
@@ -2130,6 +2155,7 @@ function showPinModal(incorrect) {
     ? "That PIN was incorrect. Enter the current PIN shown on your console."
     : "The console is asking for its login PIN. Enter the PIN shown on your console.";
   $("pin-input").value = "";
+  loginPinReveal.reset();
   $("pin-input").focus();
 }
 
@@ -2139,10 +2165,12 @@ $("pin-form").addEventListener("submit", (event) => {
   if (!pin) return;
   sendWs({ type: "pin", pin });
   pinModal.classList.add("hidden");
+  loginPinReveal.reset();
 });
 
 function cancelPin() {
   pinModal.classList.add("hidden");
+  loginPinReveal.reset();
   stopSession();
 }
 
@@ -2177,6 +2205,7 @@ async function cleanupSession(resetUi) {
   state.lastInputJson = "";
   state.lastInputAt = 0;
   pinModal.classList.add("hidden");
+  loginPinReveal.reset();
   if (document.pointerLockElement) {
     ignorePromiseRejection(document.exitPointerLock());
   }

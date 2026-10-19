@@ -3,6 +3,14 @@
 All notable changes to Setu are documented here. The project follows semantic
 versioning; it is a Chiaki derivative and remains AGPL-3.0-only.
 
+## [0.4.3] - 2026-10-19
+
+### Changed
+
+- Console pairing and login PIN fields are masked by default. An eye button
+  reveals the digits locally, and both fields return to masked whenever the
+  panel or modal is reopened.
+
 ## [0.4.2] - 2026-10-19
 
 ### Fixed

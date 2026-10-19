@@ -589,6 +589,37 @@ label.check { flex-direction: row; align-items: center; gap: 10px; font-size: 13
 label.check input { width: auto; }
 .field-row { display: flex; gap: 8px; }
 .field-row input { flex: 1; }
+.pin-field { position: relative; flex: 1 1 auto; min-width: 0; }
+.pin-field input { width: 100%; padding-right: 42px; }
+.pin-reveal {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.pin-reveal:hover, .pin-reveal:focus-visible { color: var(--text); background: rgba(255, 255, 255, .08); }
+.pin-reveal svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.pin-reveal-slash { display: none; }
+.pin-reveal.revealed .pin-reveal-slash { display: block; }
 .field-block { display: flex; flex-direction: column; gap: 6px; }
 .advanced-fields {
   display: flex;
@@ -857,7 +888,8 @@ kbd {
 }
 .modal-card h2 { font-size: 22px; }
 #pin-form { display: flex; flex-wrap: wrap; gap: 8px; }
-#pin-input { flex: 1 1 100%; text-align: center; font-size: 20px; letter-spacing: .3em; }
+#pin-form .pin-field { flex: 1 1 100%; }
+#pin-input { text-align: center; font-size: 20px; letter-spacing: .3em; }
 #pin-form button { flex: 1; }
 .auth-card form { display: flex; flex-direction: column; gap: 10px; }
 .auth-card button { width: 100%; }
