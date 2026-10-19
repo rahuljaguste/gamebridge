@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 // Generated from the Chiaki v2.2.0 test suite by tools/gen_test_vectors.py.
 pub const GKCRYPT_KEY: [u8; 16] = [
     0x35, 0x95, 0x81, 0x87, 0xeb, 0xcb, 0x63, 0x54, 0x90, 0x00, 0xd7, 0xd5,

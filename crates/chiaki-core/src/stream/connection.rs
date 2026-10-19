@@ -127,6 +127,7 @@ async fn run_inner(
         media_tx,
         takion.commands.clone(),
         stats.clone(),
+        video_profile.codec,
         ingest_cancel.clone(),
     ));
 
@@ -166,7 +167,7 @@ async fn run_inner(
             &sig,
         );
         let big_len = big.len();
-        if std::env::var_os("PSRP_DUMP_STREAM").is_some() {
+        if std::env::var_os("SETU_DUMP_STREAM").is_some() {
             fn hex(bytes: &[u8]) -> String {
                 bytes.iter().map(|b| format!("{b:02x}")).collect()
             }
@@ -294,11 +295,19 @@ async fn run_inner(
                 }
                 _ = heartbeat.tick() => {
                     let payload = protobuf::encode_heartbeat();
-                    let _ = takion.commands.try_send(TakionCommand::SendMessageData {
+                    if let Err(err) = takion.commands.try_send(TakionCommand::SendMessageData {
                         flags: 1,
                         channel: 1,
                         payload,
-                    });
+                    }) {
+                        if matches!(err, tokio::sync::mpsc::error::TrySendError::Closed(_)) {
+                            tracing::warn!("stream: media transport command channel closed");
+                            outcome.quit_reason = QuitReason::StreamConnectionUnknown;
+                            outcome.reason_str = Some("media transport task ended".into());
+                            break;
+                        }
+                        tracing::debug!("stream: heartbeat skipped; transport queue is full");
+                    }
                 }
                 event = takion.events.recv() => {
                     let Some(event) = event else {

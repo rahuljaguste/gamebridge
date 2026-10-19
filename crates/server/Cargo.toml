@@ -1,13 +1,14 @@
 [package]
-name = "ps-remoteplay-server"
-description = "Browser bridge for PlayStation Remote Play"
+name = "setu-server"
+description = "Unofficial browser bridge for PlayStation Remote Play"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish = false
 
 [[bin]]
-name = "ps-remoteplay"
+name = "setu"
 path = "src/main.rs"
 
 [dependencies]
@@ -33,3 +34,9 @@ hex = "0.4"
 bytes = "1"
 async-trait = "0.1"
 tokio-util = { version = "0.7", features = ["rt"] }
+sha2 = "0.10.9"
+subtle = "2.6"
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

@@ -103,6 +103,15 @@ impl TakionHandle {
     }
 }
 
+impl Drop for TakionHandle {
+    fn drop(&mut self) {
+        // A dropped handle must not leave the UDP driver task running after
+        // the owning session has ended.
+        self.cancel.cancel();
+        self.join.abort();
+    }
+}
+
 struct DataEntry {
     data_type: u8,
     payload: Bytes,
@@ -589,7 +598,7 @@ async fn run(
                 }
             }
             _ = tick.tick() => {
-                let due = state.send_buffer.take_due(Instant::now());
+                let (due, exhausted) = state.send_buffer.take_due(Instant::now());
                 if !due.is_empty() {
                     tracing::info!("takion: retransmitting {} packet(s)", due.len());
                 }
@@ -597,6 +606,12 @@ async fn run(
                     if sock.send(&packet).await.is_err() {
                         break;
                     }
+                }
+                if exhausted {
+                    tracing::warn!(
+                        "takion: console stopped acknowledging packets; closing the session"
+                    );
+                    break;
                 }
             }
         }
@@ -927,5 +942,39 @@ mod format_tests {
                 0xe5
             ]
         );
+    }
+
+    #[test]
+    fn key_position_advance_is_pinned_per_packet_type() {
+        let handshake = [0x11; 16];
+        let secret = [0x22; 32];
+        let mut state = test_state();
+        state.enable_crypt = true;
+        state.gkcrypt_local = Some(GKCrypt::new(2, &handshake, &secret).unwrap());
+        state.key_pos_local = 0;
+
+        // DATA advances by len + len % 16.
+        state.build_message_data(1, 1, &[0; 10]).unwrap();
+        assert_eq!(state.key_pos_local, 20);
+        state.build_message_data_cont(0, 1, &[0; 16]).unwrap();
+        assert_eq!(state.key_pos_local, 36);
+
+        // DATA_ACK uses the fixed 29-byte size, rounded to 32.
+        state.build_data_ack(0).unwrap();
+        assert_eq!(state.key_pos_local, 78);
+
+        // Congestion packets use their 15-byte wire size, rounded to 30.
+        state
+            .build_congestion(CongestionPacket {
+                word_0: 0,
+                received: 0,
+                lost: 0,
+            })
+            .unwrap();
+        assert_eq!(state.key_pos_local, 108);
+
+        // Feedback advances by payload + 16, rounded up.
+        state.build_feedback(0, &[0; 17]).unwrap();
+        assert_eq!(state.key_pos_local, 142);
     }
 }

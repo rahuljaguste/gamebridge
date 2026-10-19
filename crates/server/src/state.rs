@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use serde::Serialize;
-use tokio::sync::{Mutex, broadcast, mpsc, oneshot, watch};
+use tokio::sync::{Mutex, Notify, broadcast, mpsc, oneshot, watch};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use webrtc::peer_connection::PeerConnection;
 
@@ -67,6 +68,9 @@ pub enum ServerEvent {
         message: String,
     },
     Quit {
+        /// Identifies the session that ended. A browser that has already
+        /// moved on to a newer session must ignore this event.
+        session_id: String,
         reason: String,
         reason_string: Option<String>,
     },
@@ -91,6 +95,7 @@ pub struct ActiveSession {
     pub commands: mpsc::Sender<SessionCommand>,
     pub peer: Arc<dyn PeerConnection>,
     pub peer_connected: Arc<AtomicBool>,
+    pub gathering: Arc<Notify>,
     pub stop_tx: Option<oneshot::Sender<()>>,
     pub started: Instant,
 }
@@ -114,6 +119,10 @@ pub struct AppState {
     /// uses this to detect a closed tab.
     pub ws_clients: Arc<AtomicUsize>,
     pub demo_file: Option<std::path::PathBuf>,
+    /// Cancelled once when the HTTP server begins a graceful shutdown, so
+    /// upgraded WebSocket handlers can close their sockets instead of relying
+    /// on the runtime being torn down underneath them.
+    pub shutdown: CancellationToken,
 }
 
 const REPLAY_CAPACITY: usize = 32;
@@ -130,6 +139,7 @@ impl AppState {
             replay: std::sync::Mutex::new(VecDeque::new()),
             ws_clients: Arc::new(AtomicUsize::new(0)),
             demo_file,
+            shutdown: CancellationToken::new(),
         })
     }
 
@@ -137,7 +147,9 @@ impl AppState {
     /// The replay lock is held across `send` so a subscriber either sees an
     /// event live or in its snapshot, never both and never neither.
     pub fn publish(&self, event: ServerEvent) {
-        let mut replay = self.replay.lock().unwrap();
+        // A panic while a previous writer held this lock must not turn every
+        // later event into another panic; the buffer is only a replay cache.
+        let mut replay = self.replay.lock().unwrap_or_else(|e| e.into_inner());
         if !matches!(&event, ServerEvent::Stats { .. }) {
             if replay.len() >= REPLAY_CAPACITY {
                 replay.pop_front();
@@ -149,13 +161,16 @@ impl AppState {
 
     /// Subscribe and snapshot the replay buffer atomically.
     pub fn subscribe_with_replay(&self) -> (broadcast::Receiver<ServerEvent>, Vec<ServerEvent>) {
-        let replay = self.replay.lock().unwrap();
+        let replay = self.replay.lock().unwrap_or_else(|e| e.into_inner());
         let receiver = self.events.subscribe();
         (receiver, replay.iter().cloned().collect())
     }
 
     pub fn clear_replay(&self) {
-        self.replay.lock().unwrap().clear();
+        self.replay
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 
     pub fn ws_client_connected(&self) {
@@ -210,7 +225,7 @@ mod tests {
     use crate::config::ConfigStore;
 
     fn test_state() -> Arc<AppState> {
-        let dir = std::env::temp_dir().join(format!("ps-remoteplay-test-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("setu-test-{}", Uuid::new_v4()));
         let store = ConfigStore::load(Some(dir)).expect("load empty config");
         AppState::new(store, None)
     }

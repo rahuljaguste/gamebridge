@@ -8,6 +8,11 @@ use crate::takion::packet::AvPacket;
 
 pub const UNIT_SLOTS_MAX: usize = 256;
 pub const VIDEO_BUFFER_PADDING: usize = 64;
+/// Hard ceiling for one assembled frame. A legitimate console frame is far
+/// smaller (256 MTU-sized units is well under 1 MiB); this stops a
+/// GMAC-authenticated but hostile packet from pinning tens of megabytes with a
+/// forged padding field.
+pub const MAX_FRAME_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlushResult {
@@ -49,43 +54,70 @@ impl FrameProcessor {
         if packet.units_in_frame_total < packet.units_in_frame_fec {
             return Err(Error::InvalidData);
         }
-        self.flushed = false;
-        self.units_source_expected =
+        // Compute and validate everything into locals first. A malformed
+        // packet must not leave stale geometry behind: subsequent packets for
+        // the same frame would otherwise be assembled against the bad header.
+        let units_source_expected =
             (packet.units_in_frame_total - packet.units_in_frame_fec) as usize;
-        self.units_fec_expected = packet.units_in_frame_fec.max(1) as usize;
-        self.buf_size_per_unit = packet.data_len;
-        if packet.is_video && (packet.unit_index as usize) < self.units_source_expected {
+        let units_fec_expected = packet.units_in_frame_fec.max(1) as usize;
+        let mut buf_size_per_unit = packet.data_len;
+        if packet.is_video && (packet.unit_index as usize) < units_source_expected {
             if data.len() < 2 {
                 return Err(Error::BufferTooSmall);
             }
             let padding = u16::from_be_bytes([data[0], data[1]]) as usize;
-            self.buf_size_per_unit += padding;
+            buf_size_per_unit = buf_size_per_unit
+                .checked_add(padding)
+                .ok_or(Error::InvalidData)?;
         }
-        self.stride = self.buf_size_per_unit.div_ceil(16) * 16;
-        if self.buf_size_per_unit == 0 {
+        if buf_size_per_unit == 0 {
             return Err(Error::BufferTooSmall);
         }
-        self.units_source_received = 0;
-        self.units_fec_received = 0;
-        let slots = self.units_source_expected + self.units_fec_expected;
+        let stride = buf_size_per_unit.div_ceil(16) * 16;
+        let slots = units_source_expected
+            .checked_add(units_fec_expected)
+            .ok_or(Error::InvalidData)?;
         if slots > UNIT_SLOTS_MAX {
             return Err(Error::InvalidData);
         }
-        if slots != self.unit_slots.len() {
-            self.unit_slots = vec![0; slots];
-        } else {
-            self.unit_slots.fill(0);
+        let required = stride
+            .checked_mul(slots)
+            .and_then(|n| n.checked_add(VIDEO_BUFFER_PADDING))
+            .ok_or(Error::InvalidData)?;
+        if required > MAX_FRAME_BUFFER_BYTES {
+            return Err(Error::InvalidData);
         }
-        let required = self.stride * slots + VIDEO_BUFFER_PADDING;
-        if self.frame_buf.len() < required {
-            self.frame_buf = vec![0; required];
+
+        let mut unit_slots = if slots != self.unit_slots.len() {
+            vec![0; slots]
         } else {
-            self.frame_buf[..required].fill(0);
+            std::mem::take(&mut self.unit_slots)
+        };
+        unit_slots.fill(0);
+        let mut frame_buf = std::mem::take(&mut self.frame_buf);
+        if frame_buf.len() < required {
+            frame_buf.resize(required, 0);
+        } else {
+            frame_buf[..required].fill(0);
         }
+
+        // Commit only after all fallible work is complete.
+        self.frame_buf = frame_buf;
+        self.unit_slots = unit_slots;
+        self.units_source_expected = units_source_expected;
+        self.units_fec_expected = units_fec_expected;
+        self.buf_size_per_unit = buf_size_per_unit;
+        self.stride = stride;
+        self.units_source_received = 0;
+        self.units_fec_received = 0;
+        self.flushed = false;
         Ok(())
     }
 
     pub fn put_unit(&mut self, packet: &AvPacket, data: &[u8]) -> Result<()> {
+        if self.flushed {
+            return Ok(());
+        }
         let idx = packet.unit_index as usize;
         if idx >= self.unit_slots.len() {
             return Err(Error::InvalidData);
@@ -93,22 +125,58 @@ impl FrameProcessor {
         if data.is_empty() {
             return Err(Error::InvalidData);
         }
-        if data.len() > self.buf_size_per_unit {
-            return Err(Error::InvalidData);
-        }
         if self.unit_slots[idx] != 0 {
             return Err(Error::InvalidData);
         }
-        self.unit_slots[idx] = data.len();
-        if !self.flushed {
-            let off = idx * self.stride;
-            self.frame_buf[off..off + data.len()].copy_from_slice(data);
+        // The first packet of a frame is normally unit 0 and carries the
+        // padding extension that sets the symbol size. UDP reordering can
+        // deliver a different unit first; grow the frame buffer if a later
+        // (for example FEC) unit is larger instead of rejecting every such
+        // unit for the rest of the frame.
+        if data.len() > self.buf_size_per_unit {
+            self.grow_unit_size(data.len())?;
         }
+        self.unit_slots[idx] = data.len();
+        let off = idx * self.stride;
+        self.frame_buf[off..off + data.len()].copy_from_slice(data);
         if idx < self.units_source_expected {
             self.units_source_received += 1;
         } else {
             self.units_fec_received += 1;
         }
+        Ok(())
+    }
+
+    /// True once `flush` has consumed the current frame. Late units are
+    /// expected (the frame may flush as soon as all source units arrive) and
+    /// should be ignored by the ingest loop.
+    pub fn is_flushed(&self) -> bool {
+        self.flushed
+    }
+
+    fn grow_unit_size(&mut self, size: usize) -> Result<()> {
+        let stride = size.div_ceil(16) * 16;
+        let slots = self.unit_slots.len();
+        let required = stride
+            .checked_mul(slots)
+            .and_then(|n| n.checked_add(VIDEO_BUFFER_PADDING))
+            .ok_or(Error::InvalidData)?;
+        if required > MAX_FRAME_BUFFER_BYTES {
+            return Err(Error::InvalidData);
+        }
+        let mut frame_buf = vec![0u8; required];
+        for (i, &len) in self.unit_slots.iter().enumerate() {
+            if len == 0 {
+                continue;
+            }
+            let old_off = i * self.stride;
+            let new_off = i * stride;
+            frame_buf[new_off..new_off + len]
+                .copy_from_slice(&self.frame_buf[old_off..old_off + len]);
+        }
+        self.frame_buf = frame_buf;
+        self.buf_size_per_unit = size;
+        self.stride = stride;
         Ok(())
     }
 
@@ -229,5 +297,61 @@ mod tests {
         let (result, frame) = fp.flush();
         assert_eq!(result, FlushResult::Success);
         assert_eq!(frame, vec![0xaa, 0xbb, 0xcc, 0xdd]);
+    }
+
+    #[test]
+    fn malformed_allocation_does_not_poison_state() {
+        let mut fp = FrameProcessor::new();
+        // More FEC units than total units is rejected before any state changes.
+        let bad = packet(0, 0, 1, 2, 4);
+        assert!(fp.alloc_frame(&bad, &[0, 0, 0, 0]).is_err());
+
+        let unit0 = [0u8, 3u8, 0xaa, 0xbb, 0xcc];
+        let unit1 = [0u8, 0u8, 0xdd];
+        let p0 = packet(0, 0, 3, 1, unit0.len());
+        let p1 = packet(0, 1, 3, 1, unit1.len());
+        fp.alloc_frame(&p0, &unit0).unwrap();
+        fp.put_unit(&p0, &unit0).unwrap();
+        fp.put_unit(&p1, &unit1).unwrap();
+        let (result, frame) = fp.flush();
+        assert_eq!(result, FlushResult::Success);
+        assert_eq!(frame, vec![0xaa, 0xbb, 0xcc, 0xdd]);
+
+        // A late unit for a flushed frame is expected and ignored.
+        assert!(fp.is_flushed());
+        assert!(fp.put_unit(&p1, &unit1).is_ok());
+    }
+
+    #[test]
+    fn rejects_a_padding_field_that_would_pin_a_huge_frame_buffer() {
+        let mut fp = FrameProcessor::new();
+        let mut data = vec![0u8; 65535];
+        data[0] = 0xff;
+        data[1] = 0xff;
+        // 65 KiB payload + 65 KiB padding across 256 slots would otherwise
+        // reserve over 33 MiB from one authenticated packet.
+        let oversized = packet(0, 0, 256, 1, data.len());
+        assert!(fp.alloc_frame(&oversized, &data).is_err());
+    }
+
+    #[test]
+    fn grows_when_a_later_unit_is_larger_than_the_first() {
+        let mut fp = FrameProcessor::new();
+        // The first packet is a small FEC unit, so there is no padding
+        // extension to size the source units.
+        let fec = packet(0, 3, 4, 1, 10);
+        fp.alloc_frame(&fec, &[0; 10]).unwrap();
+        fp.put_unit(&fec, &[0; 10]).unwrap();
+
+        let mut source = [0u8; 20];
+        source[1] = 2; // two-byte padding count
+        for unit in 0..3 {
+            let p = packet(0, unit, 4, 1, source.len());
+            fp.put_unit(&p, &source).unwrap();
+        }
+        assert!(fp.flush_possible());
+        let (result, frame) = fp.flush();
+        assert_eq!(result, FlushResult::Success);
+        assert_eq!(frame.len(), 3 * (source.len() - 2));
     }
 }

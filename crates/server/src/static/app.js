@@ -19,6 +19,7 @@ const B = {
   PS: 1 << 15,
 };
 
+const ICE_RESTART_MAX = 3;
 const $ = (id) => document.getElementById(id);
 const video = $("video");
 const videoWrap = $("video-wrap");
@@ -45,16 +46,27 @@ function renderStats() {
 }
 const hostsEl = $("hosts");
 const discoveredEl = $("discovered");
-const discoveredPanel = $("discovered-panel");
 const pinModal = $("pin-modal");
+const authModal = $("auth-modal");
+const lockBtn = $("lock-btn");
 const toastEl = $("toast");
 const demoBtn = $("demo-btn");
 
 const state = {
   hosts: [],
   sessionId: null,
+  // Set by `session_started` on the event socket. A teardown event from an
+  // older session must not clean up the session that replaced it.
+  serverSessionId: null,
+  // Synchronous guard: `sessionId` is only set after the start response, so
+  // without this a double-click can fire two starts and the loser cleans up
+  // the winner's player.
+  starting: false,
+  startEpoch: 0,
   pc: null,
   ws: null,
+  wsRetry: null,
+  wsRetryDelay: 500,
   stream: null,
   inputTimer: null,
   lastInputJson: "",
@@ -66,6 +78,10 @@ const state = {
   padIndex: null,
   streaming: false,
   detachedActive: false,
+  iceTimer: null,
+  iceRestarting: false,
+  iceAttempts: 0,
+  iceGaveUp: false,
 };
 let detachedTimer = null;
 
@@ -822,11 +838,11 @@ function stopSharpening() {
 
 function persistPicture() {
   try {
-    localStorage.setItem("psrp.sharpness", String(sharpnessAmount()));
-    localStorage.setItem("psrp.brightness", String(colorAmount(brightnessInput)));
-    localStorage.setItem("psrp.contrast", String(colorAmount(contrastInput)));
-    localStorage.setItem("psrp.saturation", String(colorAmount(saturationInput)));
-    localStorage.setItem("psrp.temporal", String(temporalAmount()));
+    localStorage.setItem("setu.sharpness", String(sharpnessAmount()));
+    localStorage.setItem("setu.brightness", String(colorAmount(brightnessInput)));
+    localStorage.setItem("setu.contrast", String(colorAmount(contrastInput)));
+    localStorage.setItem("setu.saturation", String(colorAmount(saturationInput)));
+    localStorage.setItem("setu.temporal", String(temporalAmount()));
   } catch {}
 }
 
@@ -871,11 +887,11 @@ pictureReset.addEventListener("click", () => {
     value = Math.min(max, Math.max(min, value));
     input.value = String(value);
   };
-  load(sharpnessInput, "psrp.sharpness", PICTURE_DEFAULTS.sharpness);
-  load(brightnessInput, "psrp.brightness", PICTURE_DEFAULTS.brightness);
-  load(contrastInput, "psrp.contrast", PICTURE_DEFAULTS.contrast);
-  load(saturationInput, "psrp.saturation", PICTURE_DEFAULTS.saturation);
-  load(temporalInput, "psrp.temporal", PICTURE_DEFAULTS.temporal);
+  load(sharpnessInput, "setu.sharpness", PICTURE_DEFAULTS.sharpness);
+  load(brightnessInput, "setu.brightness", PICTURE_DEFAULTS.brightness);
+  load(contrastInput, "setu.contrast", PICTURE_DEFAULTS.contrast);
+  load(saturationInput, "setu.saturation", PICTURE_DEFAULTS.saturation);
+  load(temporalInput, "setu.temporal", PICTURE_DEFAULTS.temporal);
   applyPicture();
 })();
 
@@ -923,16 +939,27 @@ function setStatus(text, kind = "") {
 }
 
 let toastTimer = null;
-function toast(message, bad = false) {
+let toastKind = "";
+function toast(message, bad = false, duration = 4500, kind = "") {
   // A new toast replaces the old one, so its dismissal timer must be reset;
   // otherwise the previous timer hides the new message almost immediately.
   if (toastTimer) clearTimeout(toastTimer);
+  toastKind = kind;
   toastEl.textContent = message;
   toastEl.className = "toast" + (bad ? " bad" : "");
+  toastEl.setAttribute("role", bad ? "alert" : "status");
+  toastEl.setAttribute("aria-live", bad ? "assertive" : "polite");
   toastTimer = setTimeout(() => {
     toastEl.classList.add("hidden");
     toastTimer = null;
-  }, 4500);
+  }, bad ? Math.max(duration, 7000) : duration);
+}
+
+function dismissToast() {
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = null;
+  toastKind = "";
+  toastEl.classList.add("hidden");
 }
 
 async function api(path, options = {}) {
@@ -944,9 +971,39 @@ async function api(path, options = {}) {
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
   if (!response.ok) {
-    throw new Error((data && data.error) || `HTTP ${response.status}`);
+    const error = new Error((data && data.error) || `HTTP ${response.status}`);
+    error.status = response.status;
+    if (response.status === 401 && path !== "/api/auth/login") {
+      showAuthModal();
+    }
+    throw error;
   }
   return data;
+}
+
+function showAuthModal(message = "") {
+  if (state.sessionId || state.streaming || state.ws || state.detachedActive || state.pc) {
+    cleanupSession(true);
+  }
+  closeAddConsole({ restoreFocus: false, notify: false });
+  closeSettings();
+  hideContextToast();
+  state.hosts = [];
+  renderHosts();
+  discoveredEl.innerHTML = "";
+  lockBtn.classList.add("hidden");
+  pinModal.classList.add("hidden");
+  authModal.classList.remove("hidden");
+  if (message) $("auth-error").textContent = message;
+  $("auth-token").focus();
+  updateContextMessage();
+}
+
+function hideAuthModal() {
+  authModal.classList.add("hidden");
+  $("auth-error").textContent = "";
+  $("auth-token").value = "";
+  updateContextMessage();
 }
 
 function showOverlay(title, text) {
@@ -959,6 +1016,194 @@ function hideOverlay() {
   overlay.classList.add("hidden");
 }
 
+function showPlayer() {
+  $("home-view").classList.add("hidden");
+  $("player-view").classList.remove("hidden");
+  document.body.classList.add("player-active");
+  hideContextToast();
+  updateContextMessage();
+}
+
+function showHome() {
+  $("home-view").classList.remove("hidden");
+  $("player-view").classList.add("hidden");
+  document.body.classList.remove("player-active");
+  hidePlayerBar();
+  updateContextMessage();
+}
+
+function showHomeNotice(title, text) {
+  toast(text ? `${title} — ${text}` : title, true, 6500);
+}
+
+let contextReady = false;
+let lastShownContext = "";
+
+function contextMessage() {
+  if (!authModal.classList.contains("hidden")) return "Private access to this bridge";
+  if (addIsOpen()) return "Pair a new console";
+  if (settingsIsOpen()) return "Fine-tune your stream";
+  if (discovering) return "Scanning your network…";
+  if (state.streaming) return "Streaming live";
+  if (state.hosts.length) return "Game Console Bridge";
+  if (discoveredEl.querySelector(".nearby-tile")) return "Pair a console to get started";
+  return "Your console, in your browser";
+}
+
+function canShowContextToast() {
+  if (document.body.classList.contains("player-active")) return false;
+  if (settingsIsOpen() || addIsOpen()) return false;
+  if (!authModal.classList.contains("hidden")) return false;
+  if (!toastEl.classList.contains("hidden") && toastKind !== "context") return false;
+  return true;
+}
+
+function updateContextMessage() {
+  const message = contextMessage();
+  if (!contextReady || message === lastShownContext) return;
+  if (!canShowContextToast()) return;
+  lastShownContext = message;
+  toast(message, false, 3200, "context");
+}
+
+function primeContextToast() {
+  contextReady = true;
+  const message = contextMessage();
+  lastShownContext = message;
+  if (canShowContextToast()) toast(message, false, 3200, "context");
+}
+
+function hideContextToast() {
+  if (toastKind !== "context") return;
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = null;
+  toastKind = "";
+  toastEl.classList.add("hidden");
+}
+
+let playerBarTimer = null;
+
+function showPlayerBar(autoHide = true) {
+  if (document.body.classList.contains("player-active")) {
+    $("player-bar").classList.remove("hidden");
+  }
+  clearTimeout(playerBarTimer);
+  if (autoHide && state.streaming) {
+    playerBarTimer = setTimeout(() => {
+      if (!settingsIsOpen()) {
+        $("player-bar").classList.add("hidden");
+      }
+    }, 3000);
+  }
+}
+
+function hidePlayerBar() {
+  clearTimeout(playerBarTimer);
+  $("player-bar").classList.add("hidden");
+}
+
+let settingsReturnFocus = null;
+
+function settingsIsOpen() {
+  return $("settings-overlay").classList.contains("open");
+}
+
+function openSettings(tab = "stream") {
+  if (addIsOpen()) closeAddConsole({ restoreFocus: false, notify: false });
+  hideContextToast();
+  const overlay = $("settings-overlay");
+  if (!overlay.classList.contains("open")) {
+    settingsReturnFocus = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    overlay.removeAttribute("inert");
+    overlay.setAttribute("aria-hidden", "false");
+    overlay.classList.add("open");
+  }
+  setSettingsTab(tab);
+  clearTimeout(playerBarTimer);
+  $("settings-drawer").focus({ preventScroll: true });
+  updateContextMessage();
+}
+
+function closeSettings() {
+  const overlay = $("settings-overlay");
+  if (!overlay.classList.contains("open")) return;
+  overlay.classList.remove("open");
+  overlay.setAttribute("aria-hidden", "true");
+  overlay.setAttribute("inert", "");
+  if (settingsReturnFocus && document.contains(settingsReturnFocus)) {
+    settingsReturnFocus.focus({ preventScroll: true });
+  }
+  settingsReturnFocus = null;
+  if (document.body.classList.contains("player-active")) showPlayerBar();
+  updateContextMessage();
+}
+
+function setSettingsTab(name) {
+  for (const key of ["stream", "picture", "input"]) {
+    $(`settings-${key}`).classList.toggle("hidden", key !== name);
+    const tab = $(`settings-${key}-tab`);
+    tab.classList.toggle("active", key === name);
+    tab.setAttribute("aria-selected", String(key === name));
+  }
+}
+
+let addReturnFocus = null;
+
+function addIsOpen() {
+  return $("add-overlay").classList.contains("open");
+}
+
+function setFieldHelp(name, open) {
+  $(`${name}-help-btn`).setAttribute("aria-expanded", String(open));
+  $(`${name}-help`).classList.toggle("hidden", !open);
+}
+
+function toggleFieldHelp(name) {
+  const willOpen = $(`${name}-help`).classList.contains("hidden");
+  for (const key of ["host", "pin"]) {
+    setFieldHelp(key, key === name ? willOpen : false);
+  }
+}
+
+function closeFieldHelps() {
+  setFieldHelp("host", false);
+  setFieldHelp("pin", false);
+}
+
+function openAddConsole({ auto = false } = {}) {
+  closeSettings();
+  hideContextToast();
+  const overlay = $("add-overlay");
+  if (!overlay.classList.contains("open")) {
+    addReturnFocus = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    overlay.removeAttribute("inert");
+    overlay.setAttribute("aria-hidden", "false");
+    overlay.classList.add("open");
+  }
+  closeFieldHelps();
+  if (auto) $("add-drawer").focus({ preventScroll: true });
+  else $("reg-host").focus();
+  updateContextMessage();
+}
+
+function closeAddConsole({ restoreFocus = true, notify = true } = {}) {
+  const overlay = $("add-overlay");
+  if (!overlay.classList.contains("open")) return;
+  overlay.classList.remove("open");
+  overlay.setAttribute("aria-hidden", "true");
+  overlay.setAttribute("inert", "");
+  closeFieldHelps();
+  if (restoreFocus && addReturnFocus && document.contains(addReturnFocus)) {
+    addReturnFocus.focus({ preventScroll: true });
+  }
+  addReturnFocus = null;
+  if (notify) updateContextMessage();
+}
+
 function setBusy(busy) {
   $("stop-btn").disabled = !busy;
 }
@@ -969,136 +1214,496 @@ async function loadHosts() {
   try {
     state.hosts = await api("/api/hosts");
     renderHosts();
+    return true;
   } catch (e) {
-    toast(`Could not load consoles: ${e.message}`, true);
+    if (e.status !== 401) toast(`Could not load consoles: ${e.message}`, true);
+    return false;
   }
+}
+
+function hostDisplayName(host) {
+  return host.name || host.nickname || host.host;
+}
+
+function consoleAvatar(name) {
+  return String(name || "").trim().charAt(0).toUpperCase() || "C";
+}
+
+// Deterministic blue/violet artwork tint per console, so each tile has its
+// own identity without loading any external images.
+function hueFor(name) {
+  let hash = 0;
+  for (const ch of String(name || "console")) {
+    hash = (hash * 31 + ch.codePointAt(0)) >>> 0;
+  }
+  return 198 + (hash % 96);
+}
+
+function tileArt(name) {
+  const art = document.createElement("span");
+  art.className = "tile-art";
+  art.setAttribute("aria-hidden", "true");
+  const device = document.createElement("span");
+  device.className = "tile-device";
+  const monogram = document.createElement("span");
+  monogram.className = "tile-monogram";
+  monogram.textContent = consoleAvatar(name);
+  art.append(device, monogram);
+  return art;
+}
+
+function tileCaption(name, meta) {
+  const caption = document.createElement("span");
+  caption.className = "tile-caption";
+  const title = document.createElement("span");
+  title.className = "tile-name";
+  title.textContent = name;
+  const line = document.createElement("span");
+  line.className = "tile-meta";
+  line.textContent = meta;
+  caption.append(title, line);
+  return caption;
+}
+
+function tileBadge(text, nearby = false) {
+  const badge = document.createElement("span");
+  badge.className = "tile-badge" + (nearby ? " nearby" : "");
+  badge.textContent = text;
+  return badge;
+}
+
+function isPs4(target) {
+  return String(target || "").startsWith("ps4");
+}
+
+function consoleMenu(host, displayName) {
+  const menu = document.createElement("details");
+  menu.className = "tile-menu row-menu";
+  const summary = document.createElement("summary");
+  summary.setAttribute("aria-label", "More options");
+  summary.textContent = "⋯";
+  const pop = document.createElement("div");
+  pop.className = "menu-pop";
+
+  const wake = document.createElement("button");
+  wake.type = "button";
+  wake.textContent = "Wake";
+  wake.onclick = async () => {
+    menu.open = false;
+    wake.disabled = true;
+    wake.textContent = "Waking…";
+    try {
+      await api(`/api/wakeup/${encodeURIComponent(host.id)}`, { method: "POST", body: "{}" });
+      toast(`Wake packet sent to ${displayName}`);
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      wake.disabled = false;
+      wake.textContent = "Wake";
+    }
+  };
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "danger-text";
+  remove.textContent = "Remove";
+  remove.onclick = async () => {
+    menu.open = false;
+    if (!confirm(`Remove ${displayName}?`)) return;
+    remove.disabled = true;
+    try {
+      await api(`/api/hosts/${encodeURIComponent(host.id)}`, { method: "DELETE" });
+      state.hosts = state.hosts.filter((h) => h.id !== host.id);
+      renderHosts();
+      loadHosts();
+      discover({ quiet: true });
+    } catch (e) {
+      toast(e.message, true);
+      remove.disabled = false;
+    }
+  };
+
+  pop.append(wake, remove);
+  menu.append(summary, pop);
+  return menu;
 }
 
 function renderHosts() {
   hostsEl.innerHTML = "";
-  if (!state.hosts.length) {
-    const p = document.createElement("p");
-    p.className = "empty";
-    p.textContent = "No consoles registered yet.";
-    hostsEl.appendChild(p);
-    return;
-  }
   for (const host of state.hosts) {
-    const card = document.createElement("div");
-    card.className = "host-card";
-    const info = document.createElement("div");
-    const name = document.createElement("div");
-    name.className = "name";
-    name.textContent = host.name || host.nickname || host.host;
-    const meta = document.createElement("div");
-    meta.className = "meta";
-    meta.textContent = `${host.host} · ${targetLabel(host.target)}`;
-    info.append(name, meta);
-    const actions = document.createElement("div");
-    actions.className = "actions";
-    const play = document.createElement("button");
-    play.className = "primary small";
-    play.textContent = "Play";
-    play.onclick = () => startSession(host);
-    const wake = document.createElement("button");
-    wake.className = "ghost small";
-    wake.textContent = "Wake";
-    wake.title = "Wake the console from rest mode";
-    wake.onclick = async () => {
-      wake.disabled = true;
-      wake.textContent = "Waking…";
-      try {
-        await api(`/api/wakeup/${encodeURIComponent(host.id)}`, { method: "POST", body: "{}" });
-        toast(`Wake packet sent to ${host.name || host.host}`);
-      } catch (e) {
-        toast(e.message, true);
-      } finally {
-        wake.disabled = false;
-        wake.textContent = "Wake";
-      }
-    };
-    const del = document.createElement("button");
-    del.className = "danger small";
-    del.textContent = "×";
-    del.title = "Remove";
-    del.onclick = async () => {
-      if (!confirm(`Remove ${host.name}?`)) return;
-      del.disabled = true;
-      try {
-        await api(`/api/hosts/${encodeURIComponent(host.id)}`, { method: "DELETE" });
-        state.hosts = state.hosts.filter((h) => h.id !== host.id);
-        renderHosts();
-        loadHosts(); // best-effort refresh; it reports its own failures
-      } catch (e) {
-        toast(e.message, true);
-        del.disabled = false;
-      }
-    };
-    actions.append(play, wake, del);
-    card.append(info, actions);
-    hostsEl.appendChild(card);
+    const displayName = hostDisplayName(host);
+    const slot = document.createElement("article");
+    slot.className = "console-slot";
+    slot.style.setProperty("--hue", String(hueFor(displayName)));
+
+    const tile = document.createElement("button");
+    tile.type = "button";
+    tile.className = "console-tile" + (isPs4(host.target) ? " ps4" : "");
+    tile.setAttribute("aria-label", `Play on ${displayName}`);
+    tile.onclick = () => startSession(host);
+    tile.append(
+      tileArt(displayName),
+      tileBadge(targetLabel(host.target)),
+      tileCaption(displayName, host.host),
+    );
+
+    const play = document.createElement("span");
+    play.className = "tile-play";
+    play.textContent = "▶";
+    play.setAttribute("aria-hidden", "true");
+    tile.appendChild(play);
+
+    slot.append(tile, consoleMenu(host, displayName));
+    hostsEl.appendChild(slot);
   }
+  updateContextMessage();
 }
 
 function targetLabel(target) {
   return ({ ps5_1: "PS5", ps4_10: "PS4 8.0+", ps4_9: "PS4 7.0", ps4_8: "PS4" })[target] || target;
 }
 
-async function discover() {
+let detectTimer = null;
+let detectSeq = 0;
+
+function setDetectStatus(text, kind = "") {
+  const status = $("reg-target-status");
+  status.className = "detect-status" + (kind ? " " + kind : "");
+  $("reg-target-text").textContent = text;
+}
+
+function targetRadios() {
+  return document.querySelectorAll('input[name="console-type"]');
+}
+
+function clearTargetSelection() {
+  $("reg-target").value = "";
+  for (const radio of targetRadios()) radio.checked = false;
+}
+
+function applyDetectedTarget(target) {
+  $("reg-target").value = target;
+  for (const radio of targetRadios()) {
+    radio.checked = radio.value === target;
+  }
+  setDetectStatus(`Detected ${targetLabel(target)}`, "good");
+}
+
+async function detectConsole() {
+  const host = $("reg-host").value.trim();
+  if (!host) {
+    clearTargetSelection();
+    setDetectStatus("Enter the console IP or scan for consoles.", "bad");
+    return;
+  }
+  const seq = ++detectSeq;
+  $("reg-detect-btn").disabled = true;
+  setDetectStatus("Detecting console type…", "busy");
+  try {
+    const found = await api("/api/detect", {
+      method: "POST",
+      body: JSON.stringify({ host }),
+    });
+    if (seq !== detectSeq) return;
+    applyDetectedTarget(found.target);
+  } catch (e) {
+    if (seq !== detectSeq) return;
+    clearTargetSelection();
+    const text = e.status === 404
+      ? "No console responded. Choose the type manually."
+      : `Could not detect: ${e.message}`;
+    setDetectStatus(text, "bad");
+  } finally {
+    $("reg-detect-btn").disabled = false;
+  }
+}
+
+function onHostInput() {
+  clearTimeout(detectTimer);
+  detectSeq += 1;
+  clearTargetSelection();
+  const host = $("reg-host").value.trim();
+  if (!host) {
+    setDetectStatus("Console type is detected automatically.", "");
+    $("reg-detect-btn").disabled = false;
+    return;
+  }
+  setDetectStatus("Waiting to detect console type…", "");
+  detectTimer = setTimeout(detectConsole, 650);
+}
+
+$("reg-detect-btn").addEventListener("click", detectConsole);
+$("reg-host").addEventListener("input", onHostInput);
+for (const radio of targetRadios()) {
+  radio.addEventListener("change", () => {
+    if (!radio.checked) return;
+    clearTimeout(detectTimer);
+    detectSeq += 1;
+    $("reg-target").value = radio.value;
+    setDetectStatus(`Manual: ${targetLabel(radio.value)}`, "");
+  });
+}
+
+const PSN_ACCOUNT_KEY = "setu.psnAccountId";
+const PSN_LEGACY_SIGNIN_KEY = "setu.psnSignInId";
+
+function readSaved(key) {
+  try { return localStorage.getItem(key) || ""; } catch { return ""; }
+}
+
+function writeSaved(key, value) {
+  try {
+    const text = String(value || "").trim();
+    if (text) localStorage.setItem(key, text);
+    else localStorage.removeItem(key);
+  } catch {}
+}
+
+function updatePsnForgetVisibility() {
+  $("reg-account-clear").classList.toggle("hidden", !readSaved(PSN_ACCOUNT_KEY));
+}
+
+function clearLegacyPsnSignIn() {
+  try { localStorage.removeItem(PSN_LEGACY_SIGNIN_KEY); } catch {}
+}
+
+function loadSavedPsnAccount() {
+  clearLegacyPsnSignIn();
+  const account = readSaved(PSN_ACCOUNT_KEY);
+  if (account) $("reg-account").value = account;
+  updatePsnForgetVisibility();
+}
+
+function savePsnAccount(value) {
+  writeSaved(PSN_ACCOUNT_KEY, value);
+  updatePsnForgetVisibility();
+}
+
+function forgetSavedPsnAccount() {
+  clearLegacyPsnSignIn();
+  writeSaved(PSN_ACCOUNT_KEY, "");
+  $("reg-account").value = "";
+  updatePsnForgetVisibility();
+  toast("Saved PSN Account ID removed from this device");
+}
+
+$("reg-account-clear").addEventListener("click", forgetSavedPsnAccount);
+
+let psnCodeTimer = null;
+let psnCodeSeq = 0;
+
+function setPsnCodeStatus(text, kind = "") {
+  $("psn-code-status").className = "detect-status" + (kind ? " " + kind : "");
+  $("psn-code-text").textContent = text;
+}
+
+function isPsnRedirect(value) {
+  return /^https?:\/\//i.test(value);
+}
+
+async function resolvePsnCode() {
+  clearTimeout(psnCodeTimer);
+  const input = $("reg-psn-code").value.trim();
+  if (!input) {
+    setPsnCodeStatus("Paste the redirect URL or code; the Account ID is filled automatically.");
+    return;
+  }
+  if (isPsnRedirect(input) && !/[?&]code=/.test(input)) {
+    setPsnCodeStatus("That URL has no ?code=. Paste the complete redirect URL.", "bad");
+    return;
+  }
+  const seq = ++psnCodeSeq;
+  const button = $("psn-code-fetch");
+  button.disabled = true;
+  setPsnCodeStatus("Fetching Account ID…", "busy");
+  try {
+    const result = await api("/api/psn/account-id", {
+      method: "POST",
+      body: JSON.stringify({ redirect_url: input }),
+    });
+    if (seq !== psnCodeSeq) return;
+    $("reg-account").value = result.account_id;
+    savePsnAccount(result.account_id);
+    $("reg-psn-code").value = "";
+    setPsnCodeStatus("Account ID filled in and saved.", "good");
+    $("reg-account").focus();
+  } catch (e) {
+    if (seq !== psnCodeSeq) return;
+    setPsnCodeStatus(e.message, "bad");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function onPsnCodeInput() {
+  psnCodeSeq += 1;
+  clearTimeout(psnCodeTimer);
+  const value = $("reg-psn-code").value.trim();
+  if (!value) {
+    setPsnCodeStatus("Paste the redirect URL or code; the Account ID is filled automatically.");
+    return;
+  }
+  if (isPsnRedirect(value) && /[?&]code=/.test(value)) {
+    setPsnCodeStatus("Waiting to fetch Account ID…", "busy");
+    psnCodeTimer = setTimeout(resolvePsnCode, 350);
+  }
+}
+
+$("reg-psn-code").addEventListener("input", onPsnCodeInput);
+$("reg-psn-code").addEventListener("paste", (event) => {
+  const text = event.clipboardData?.getData("text");
+  if (!text) {
+    clearTimeout(psnCodeTimer);
+    setTimeout(resolvePsnCode, 0);
+    return;
+  }
+  event.preventDefault();
+  $("reg-psn-code").value = text.trim();
+  onPsnCodeInput();
+  resolvePsnCode();
+});
+$("reg-psn-code").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    resolvePsnCode();
+  }
+});
+$("psn-code-fetch").addEventListener("click", resolvePsnCode);
+
+function setPsnLookupStatus(text, kind = "") {
+  $("psn-lookup-status").className = "detect-status" + (kind ? " " + kind : "");
+  $("psn-lookup-text").textContent = text;
+}
+
+async function publicLookupPsn() {
+  const onlineId = $("reg-psn-lookup").value.trim();
+  if (!onlineId) {
+    setPsnLookupStatus("Enter your PSN Online ID.", "bad");
+    $("reg-psn-lookup").focus();
+    return;
+  }
+  const button = $("psn-lookup-btn");
+  button.disabled = true;
+  setPsnLookupStatus("Looking up PSN account…", "busy");
+  try {
+    const result = await api("/api/psn/public-lookup", {
+      method: "POST",
+      body: JSON.stringify({ online_id: onlineId }),
+    });
+    $("reg-account").value = result.account_id;
+    savePsnAccount(result.account_id);
+    setPsnLookupStatus("Account ID filled in and saved.", "good");
+    $("reg-account").focus();
+  } catch (e) {
+    setPsnLookupStatus(e.message, "bad");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+$("psn-lookup-btn").addEventListener("click", publicLookupPsn);
+$("reg-psn-lookup").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    publicLookupPsn();
+  }
+});
+
+async function loadPsnLogin() {
+  const link = $("psn-login-link");
+  try {
+    const info = await api("/api/psn/login");
+    link.href = info.url;
+    link.classList.remove("hidden");
+  } catch (e) {
+    if (e.status === 401) return;
+    link.classList.add("hidden");
+  }
+}
+
+let discovering = false;
+
+async function discover({ quiet = false } = {}) {
+  if (discovering) return;
+  discovering = true;
   const btn = $("discover-btn");
   btn.disabled = true;
-  btn.textContent = "Scanning…";
+  btn.classList.add("scanning");
+  btn.setAttribute("aria-label", "Scanning for consoles");
+  setDiscoveredNote("Looking for consoles on your network…");
+  updateContextMessage();
   try {
     const found = await api("/api/discover", { method: "POST", body: "{}" });
     renderDiscovered(found);
   } catch (e) {
-    toast(`Scan failed: ${e.message}`, true);
+    if (e.status === 401) return;
+    setDiscoveredNote("Could not scan the network. Try again with the scan button.");
+    if (!quiet) toast(`Scan failed: ${e.message}`, true);
   } finally {
+    discovering = false;
     btn.disabled = false;
-    btn.textContent = "Scan";
+    btn.classList.remove("scanning");
+    btn.setAttribute("aria-label", "Scan for consoles");
+    updateContextMessage();
   }
 }
 
-function renderDiscovered(found) {
+function setDiscoveredNote(text) {
   discoveredEl.innerHTML = "";
-  if (!found.length) {
-    discoveredEl.innerHTML = '<p class="empty">No consoles responded. Check that Remote Play is enabled and the console is awake.</p>';
-    discoveredPanel.classList.remove("hidden");
+  if (!text) return;
+  const note = document.createElement("p");
+  note.className = "grid-note";
+  note.textContent = text;
+  discoveredEl.appendChild(note);
+}
+
+function renderDiscovered(found) {
+  const registered = new Set(state.hosts.map((host) => String(host.host || "").trim()));
+  const nearby = found.filter((host) => !registered.has(String(host.host_addr || "").trim()));
+  discoveredEl.innerHTML = "";
+  if (!nearby.length) {
+    setDiscoveredNote("No other consoles found nearby. Make sure the console is awake and Remote Play is enabled.");
     return;
   }
-  for (const host of found) {
-    const card = document.createElement("div");
-    card.className = "host-card";
-    const info = document.createElement("div");
-    const name = document.createElement("div");
-    name.className = "name";
-    name.textContent = host.host_name || host.host_addr;
-    const meta = document.createElement("div");
-    meta.className = "meta";
-    meta.textContent = `${host.host_addr} · ${host.state} · ${targetLabel(host.target)}`;
-    info.append(name, meta);
-    const actions = document.createElement("div");
-    actions.className = "actions";
-    const use = document.createElement("button");
-    use.className = "small";
-    use.textContent = "Use";
-    use.onclick = () => {
+  for (const host of nearby) {
+    const displayName = host.host_name || host.host_addr;
+    const tile = document.createElement("button");
+    tile.type = "button";
+    tile.className = "console-tile nearby-tile" + (isPs4(host.target) ? " ps4" : "");
+    tile.style.setProperty("--hue", String(hueFor(displayName)));
+    tile.setAttribute("aria-label", `Add ${displayName}`);
+    tile.onclick = () => {
       $("reg-host").value = host.host_addr;
-      $("reg-target").value = host.target;
-      $("register-panel").open = true;
-      $("reg-host").focus();
+      applyDetectedTarget(host.target);
+      openAddConsole();
+      $("reg-pin").focus();
     };
-    actions.append(use);
-    card.append(info, actions);
-    discoveredEl.appendChild(card);
+    tile.append(
+      tileArt(displayName),
+      tileBadge("Nearby", true),
+      tileCaption(displayName, `${host.host_addr} · ${host.state || "unknown"} · ${targetLabel(host.target)}`),
+    );
+
+    const add = document.createElement("span");
+    add.className = "tile-play";
+    add.textContent = "+";
+    add.setAttribute("aria-hidden", "true");
+    tile.appendChild(add);
+    discoveredEl.appendChild(tile);
   }
-  discoveredPanel.classList.remove("hidden");
 }
 
 /* ── Registration ──────────────────────────────────────────────────────── */
 
 $("register-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  const target = $("reg-target").value;
+  if (!target) {
+    toast("Choose the console type or wait for detection", true);
+    const first = document.querySelector('input[name="console-type"]');
+    if (first) first.focus();
+    return;
+  }
   const button = $("register-btn");
   button.disabled = true;
   button.textContent = "Pairing…";
@@ -1107,7 +1712,7 @@ $("register-form").addEventListener("submit", async (event) => {
       method: "POST",
       body: JSON.stringify({
         host: $("reg-host").value.trim(),
-        target: $("reg-target").value,
+        target,
         pin: $("reg-pin").value.trim(),
         psn_account_id: $("reg-account").value.trim() || null,
         psn_online_id: $("reg-online").value.trim() || null,
@@ -1115,25 +1720,33 @@ $("register-form").addEventListener("submit", async (event) => {
         broadcast: $("reg-broadcast").checked,
       }),
     });
+    savePsnAccount($("reg-account").value.trim());
     $("reg-pin").value = "";
-    toast("Console registered");
+    toast("Console added");
+    closeAddConsole();
     await loadHosts();
+    discover({ quiet: true });
   } catch (e) {
     toast(e.message, true);
   } finally {
     button.disabled = false;
-    button.textContent = "Register";
+    button.textContent = "Add console";
   }
 });
 
 /* ── Session ───────────────────────────────────────────────────────────── */
 
 async function startSession(host) {
-  if (state.pc || state.sessionId || state.detachedActive) {
+  if (state.starting || state.pc || state.sessionId || state.detachedActive) {
     toast("A session is already active", true);
     return;
   }
-  showOverlay("Starting…", "Requesting a session from the console.");
+  state.starting = true;
+  const epoch = ++state.startEpoch;
+  closeAddConsole({ notify: false });
+  showPlayer();
+  showOverlay("Connecting…", "Requesting a session from the console.");
+  showPlayerBar(false);
   setStatus("Starting", "");
   try {
     const bitrate = parseInt($("opt-bitrate").value, 10);
@@ -1147,45 +1760,60 @@ async function startSession(host) {
         enable_dualsense: $("opt-dualsense").checked,
       }),
     });
+    if (epoch !== state.startEpoch) {
+      // The user stopped or a newer start superseded this response. Release
+      // the console session the server just created.
+      api("/api/session/stop", { method: "POST", body: "{}" }).catch(() => {});
+      return;
+    }
     const sessionId = response.session_id;
     state.sessionId = sessionId;
     // Subscribe before ICE gathering so PIN/phase events are not missed.
     connectSocket();
     setBusy(true);
     await setupPeer(response.offer, sessionId);
-    if (state.sessionId !== sessionId) return;
+    if (state.sessionId !== sessionId || epoch !== state.startEpoch) return;
     startInputLoop();
   } catch (e) {
-    if (state.sessionId === null) return;
-    showOverlay("Could not start", e.message);
-    setStatus("Error", "bad");
-    toast(e.message, true);
+    if (epoch !== state.startEpoch) return;
     await cleanupSession(false);
+    showHomeNotice("Could not start", e.message);
+  } finally {
+    if (epoch === state.startEpoch) state.starting = false;
   }
 }
 
 async function startDemo() {
-  if (state.pc || state.sessionId || state.detachedActive) {
+  if (state.starting || state.pc || state.sessionId || state.detachedActive) {
     toast("A session is already active", true);
     return;
   }
-  showOverlay("Starting demo…", "Opening a local H.264 test stream.");
+  state.starting = true;
+  const epoch = ++state.startEpoch;
+  closeAddConsole({ notify: false });
+  showPlayer();
+  showOverlay("Connecting…", "Opening a local H.264 test stream.");
+  showPlayerBar(false);
   setStatus("Starting", "");
   try {
     const response = await api("/api/demo/start", { method: "POST" });
+    if (epoch !== state.startEpoch) {
+      api("/api/session/stop", { method: "POST", body: "{}" }).catch(() => {});
+      return;
+    }
     const sessionId = response.session_id;
     state.sessionId = sessionId;
     connectSocket();
     setBusy(true);
     await setupPeer(response.offer, sessionId);
-    if (state.sessionId !== sessionId) return;
+    if (state.sessionId !== sessionId || epoch !== state.startEpoch) return;
     startInputLoop();
   } catch (e) {
-    if (state.sessionId === null) return;
-    showOverlay("Could not start demo", e.message);
-    setStatus("Error", "bad");
-    toast(e.message, true);
+    if (epoch !== state.startEpoch) return;
     await cleanupSession(false);
+    showHomeNotice("Could not start demo", e.message);
+  } finally {
+    if (epoch === state.startEpoch) state.starting = false;
   }
 }
 
@@ -1206,12 +1834,12 @@ function startDetachedPoll() {
         state.detachedActive = false;
         setBusy(false);
         setStatus("Idle", "");
-        showOverlay(
-          "Select a console to begin",
-          "Registration pairs this browser bridge with your PS4 or PS5.",
-        );
+        hideOverlay();
+        showHome();
       }
-    } catch {}
+    } catch (e) {
+      if (e.status === 401) stopDetachedPoll();
+    }
   }, 2500);
 }
 
@@ -1223,44 +1851,14 @@ async function loadStatus() {
       state.detachedActive = true;
       setBusy(true);
       setStatus("Session active", "live");
+      showPlayer();
       showOverlay(
         "Session already active",
         "A stream started in another tab is still running. Press Stop to release the console.",
       );
+      showPlayerBar(false);
       startDetachedPoll();
     }
-  } catch {}
-}
-
-async function resolvePsnAccountId() {
-  const input = $("psn-redirect").value.trim();
-  if (!input) {
-    toast("Paste the redirect URL from the PSN sign-in page", true);
-    return;
-  }
-  const button = $("psn-resolve-btn");
-  button.disabled = true;
-  button.textContent = "Looking up…";
-  try {
-    const result = await api("/api/psn/account-id", {
-      method: "POST",
-      body: JSON.stringify({ redirect_url: input }),
-    });
-    $("reg-account").value = result.account_id;
-    $("psn-redirect").value = "";
-    toast("PSN Account ID filled in");
-  } catch (e) {
-    toast(e.message, true);
-  } finally {
-    button.disabled = false;
-    button.textContent = "Get ID";
-  }
-}
-
-async function loadPsnLogin() {
-  try {
-    const info = await api("/api/psn/login");
-    $("psn-login-link").href = info.url;
   } catch {}
 }
 
@@ -1285,15 +1883,30 @@ async function setupPeer(offer, sessionId) {
     });
   };
   pc.onconnectionstatechange = () => {
-    if (state.pc !== pc) return;
+    if (state.pc !== pc || state.sessionId !== sessionId) return;
     const s = pc.connectionState;
     if (s === "connected") {
+      clearIceRestart();
+      state.iceAttempts = 0;
+      state.iceGaveUp = false;
       hideOverlay();
       setStatus("Live", "live");
       state.streaming = true;
       hintOverlay.classList.add("hidden");
-    } else if (s === "failed" || s === "disconnected" || s === "closed") {
+      showPlayerBar();
+    } else if (s === "failed") {
       setStatus(s, "bad");
+      showPlayerBar();
+      scheduleIceRestart(pc, sessionId, 0);
+    } else if (s === "disconnected") {
+      setStatus(s, "bad");
+      showPlayerBar();
+      // A transient Wi-Fi blip often recovers by itself; give it a moment
+      // before renegotiating fresh ICE credentials.
+      scheduleIceRestart(pc, sessionId, 3000);
+    } else if (s === "closed") {
+      setStatus(s, "bad");
+      showPlayerBar(false);
     } else {
       setStatus(s, "");
     }
@@ -1329,24 +1942,115 @@ function waitForIceGathering(pc) {
   });
 }
 
+function clearIceRestart() {
+  if (state.iceTimer) {
+    clearTimeout(state.iceTimer);
+    state.iceTimer = null;
+  }
+}
+
+function scheduleIceRestart(pc, sessionId, delay) {
+  if (state.pc !== pc || state.sessionId !== sessionId || state.iceGaveUp) return;
+  if (state.iceAttempts >= ICE_RESTART_MAX) {
+    state.iceGaveUp = true;
+    setStatus("Connection failed", "bad");
+    toast("Could not recover the video connection. Stop and start the session.", true);
+    return;
+  }
+  if (state.iceTimer || state.iceRestarting) return;
+  state.iceTimer = setTimeout(() => {
+    state.iceTimer = null;
+    restartIce(pc, sessionId);
+  }, delay);
+}
+
+async function restartIce(pc, sessionId) {
+  if (state.pc !== pc || state.sessionId !== sessionId || state.iceRestarting) return;
+  const alive = () => state.pc === pc && state.sessionId === sessionId;
+  state.iceRestarting = true;
+  // Count every renegotiation attempt, not only HTTP failures. A restart can
+  // complete successfully while ICE still never connects; without this the
+  // loop would retry until the server's 30 s orphan watchdog.
+  state.iceAttempts += 1;
+  let retry = false;
+  setStatus("Reconnecting", "bad");
+  try {
+    const result = await api("/api/session/restart", {
+      method: "POST",
+      body: JSON.stringify({ session_id: sessionId }),
+    });
+    if (!alive()) return;
+    await pc.setRemoteDescription({ type: "offer", sdp: result.offer.sdp });
+    if (!alive()) return;
+    const answer = await pc.createAnswer();
+    if (!alive()) return;
+    await pc.setLocalDescription(answer);
+    if (!alive()) return;
+    await waitForIceGathering(pc);
+    if (!alive()) return;
+    await api("/api/session/answer", {
+      method: "POST",
+      body: JSON.stringify({ session_id: sessionId, sdp: pc.localDescription.sdp }),
+    });
+  } catch (e) {
+    if (!alive()) return;
+    if (state.iceAttempts < ICE_RESTART_MAX) {
+      retry = true;
+    } else {
+      state.iceGaveUp = true;
+      toast(`Reconnect failed: ${e.message}`, true);
+      setStatus("Connection failed", "bad");
+    }
+  } finally {
+    state.iceRestarting = false;
+    if (retry && alive()) scheduleIceRestart(pc, sessionId, 5000);
+  }
+}
+
 function connectSocket() {
+  if (state.ws && (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
   const scheme = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${scheme}://${location.host}/api/session/ws`);
   state.ws = ws;
+  ws.onopen = () => {
+    state.wsRetryDelay = 500;
+  };
   ws.onmessage = (event) => {
     let msg;
     try { msg = JSON.parse(event.data); } catch { return; }
     handleServerEvent(msg);
   };
   ws.onclose = () => {
-    if (state.streaming) {
-      setStatus("Disconnected", "bad");
-    }
+    if (state.ws !== ws) return;
+    state.ws = null;
+    if (!state.sessionId) return;
+    if (state.streaming) setStatus("Disconnected", "bad");
+    scheduleSocketReconnect();
   };
+}
+
+function scheduleSocketReconnect() {
+  if (state.wsRetry || !state.sessionId) return;
+  const delay = state.wsRetryDelay;
+  state.wsRetryDelay = Math.min(5000, delay * 2);
+  state.wsRetry = setTimeout(() => {
+    state.wsRetry = null;
+    if (state.sessionId) connectSocket();
+  }, delay);
 }
 
 function handleServerEvent(event) {
   switch (event.type) {
+    case "session_started":
+      state.serverSessionId = event.session_id;
+      // Reconnecting the event socket does not change the WebRTC transport;
+      // restore the live status instead of leaving "Disconnected" up.
+      if (state.streaming && state.pc?.connectionState === "connected") {
+        setStatus("Live", "live");
+      }
+      break;
     case "phase":
       setStatus(phaseLabel(event.phase), "");
       break;
@@ -1378,14 +2082,29 @@ function handleServerEvent(event) {
       setStatus("Remote disconnected", "bad");
       break;
     case "error":
-      toast(event.message, true);
+      if (event.message === "no active session" && state.sessionId) {
+        cleanupSession(true);
+        showHomeNotice("Session ended", "The console session is no longer active.");
+      } else {
+        toast(event.message, true);
+      }
       break;
-    case "quit":
+    case "quit": {
+      // A teardown from an earlier session can arrive after a new one has
+      // connected on the same global event channel. Ignore it.
+      if (event.session_id) {
+        if (state.serverSessionId && event.session_id !== state.serverSessionId) break;
+        if (state.sessionId && event.session_id !== state.sessionId) break;
+      }
       cleanupSession(true);
-      setStatus(event.reason || "Ended", event.reason === "Stopped" ? "" : "bad");
-      toast(event.reason_string || event.reason || "Session ended", event.reason !== "Stopped");
-      showOverlay("Session ended", event.reason_string || event.reason || "");
+      if (event.reason === "Stopped") {
+        toast("Session stopped");
+      } else {
+        const detail = event.reason_string || event.reason || "Session ended";
+        showHomeNotice("Session ended", detail);
+      }
       break;
+    }
     case "peer_state":
       if (["failed", "disconnected", "closed"].includes(event.state)) {
         setStatus(event.state, "bad");
@@ -1445,8 +2164,12 @@ async function stopSession() {
 }
 
 async function cleanupSession(resetUi) {
+  // Supersede any start that is still waiting for its HTTP response.
+  state.startEpoch += 1;
+  state.starting = false;
   state.streaming = false;
   state.detachedActive = false;
+  state.serverSessionId = null;
   stopDetachedPoll();
   state.keyboard.clear();
   state.mouse = { dx: 0, dy: 0, left: false, right: false, locked: false };
@@ -1454,31 +2177,45 @@ async function cleanupSession(resetUi) {
   state.lastInputJson = "";
   state.lastInputAt = 0;
   pinModal.classList.add("hidden");
-  if (document.pointerLockElement) document.exitPointerLock();
+  if (document.pointerLockElement) {
+    ignorePromiseRejection(document.exitPointerLock());
+  }
   if (state.inputTimer) {
     clearInterval(state.inputTimer);
     state.inputTimer = null;
   }
-  if (state.ws) {
-    try { state.ws.close(); } catch {}
-    state.ws = null;
+  if (state.wsRetry) {
+    clearTimeout(state.wsRetry);
+    state.wsRetry = null;
   }
-  if (state.pc) {
-    try { state.pc.close(); } catch {}
-    state.pc = null;
+  clearIceRestart();
+  state.iceRestarting = false;
+  state.iceAttempts = 0;
+  state.iceGaveUp = false;
+  state.wsRetryDelay = 500;
+  const ws = state.ws;
+  state.ws = null;
+  if (ws) {
+    try { ws.close(); } catch {}
+  }
+  state.sessionId = null;
+  const pc = state.pc;
+  state.pc = null;
+  if (pc) {
+    try { pc.close(); } catch {}
   }
   state.stream = null;
-  state.sessionId = null;
   consoleLatencyMs = null;
   packetCount = { received: 0, lost: 0 };
   stopSharpening();
   video.srcObject = null;
   setBusy(false);
   hintOverlay.classList.add("hidden");
+  hideOverlay();
+  showHome();
   if (resetUi) {
     setStatus("Idle", "");
     statsEl.textContent = "";
-    showOverlay("Select a console to begin", "Registration pairs this browser bridge with your PS4 or PS5.");
   }
 }
 
@@ -1517,6 +2254,7 @@ window.addEventListener("keydown", (event) => {
   // never steal keys from the PIN modal or any text field (Backspace,
   // Space, Tab, Enter and the mapped letters must keep working).
   if (!state.streaming) return;
+  if (settingsIsOpen()) return;
   if (!pinModal.classList.contains("hidden")) return;
   if (isEditableTarget(event.target)) return;
   if (event.code in KEY_BUTTONS || ["KeyW", "KeyA", "KeyS", "KeyD", "Escape"].includes(event.code)) {
@@ -1531,9 +2269,12 @@ window.addEventListener("blur", () => state.keyboard.clear());
 
 // Form controls keep all native editing keys (Backspace, Delete, arrows,
 // Tab, Space, Enter). Stop these events before any gamepad shortcut sees
-// them, independent of the streaming state.
+// them, independent of the streaming state. Escape still bubbles so it can
+// dismiss the open drawer.
 document.querySelectorAll("input, textarea, select").forEach((element) => {
-  element.addEventListener("keydown", (event) => event.stopPropagation());
+  element.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") event.stopPropagation();
+  });
 });
 
 function startInputLoop() {
@@ -1650,10 +2391,17 @@ function clampI16(value) {
 
 /* Mouse capture and touchpad */
 
+// Pointer lock and fullscreen return promises in current browsers and reject
+// when the gesture is not trusted or the document is not focused. Those are
+// expected; never leave an unhandled rejection behind.
+function ignorePromiseRejection(result) {
+  if (result && typeof result.catch === "function") result.catch(() => {});
+}
+
 video.addEventListener("click", () => {
   if (!video.srcObject) return;
   if (document.pointerLockElement !== video) {
-    video.requestPointerLock?.();
+    ignorePromiseRejection(video.requestPointerLock?.());
   }
   video.play().catch(() => {});
 });
@@ -1746,7 +2494,48 @@ function vibrate(left, right) {
 
 /* Buttons */
 
-$("discover-btn").addEventListener("click", discover);
+$("discover-btn").addEventListener("click", () => discover());
+toastEl.addEventListener("click", dismissToast);
+$("add-console-btn").addEventListener("click", openAddConsole);
+$("add-close").addEventListener("click", () => closeAddConsole());
+$("add-cancel").addEventListener("click", () => closeAddConsole());
+$("host-help-btn").addEventListener("click", () => toggleFieldHelp("host"));
+$("pin-help-btn").addEventListener("click", () => toggleFieldHelp("pin"));
+$("settings-home-btn").addEventListener("click", () => openSettings("stream"));
+$("settings-btn").addEventListener("click", () => openSettings("stream"));
+$("settings-close").addEventListener("click", closeSettings);
+$("settings-done").addEventListener("click", closeSettings);
+$("settings-scrim").addEventListener("click", closeSettings);
+$("settings-stream-tab").addEventListener("click", () => setSettingsTab("stream"));
+$("settings-picture-tab").addEventListener("click", () => setSettingsTab("picture"));
+$("settings-input-tab").addEventListener("click", () => setSettingsTab("input"));
+
+document.addEventListener("click", (event) => {
+  for (const menu of document.querySelectorAll(".row-menu[open]")) {
+    if (!menu.contains(event.target)) menu.open = false;
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (settingsIsOpen()) {
+    event.preventDefault();
+    event.stopPropagation();
+    closeSettings();
+    return;
+  }
+  if (addIsOpen()) {
+    event.preventDefault();
+    event.stopPropagation();
+    closeAddConsole();
+    return;
+  }
+  for (const menu of document.querySelectorAll(".row-menu[open]")) menu.open = false;
+});
+
+videoWrap.addEventListener("mousemove", () => showPlayerBar());
+videoWrap.addEventListener("touchstart", () => showPlayerBar(), { passive: true });
+
 $("reg-pin-clear").addEventListener("click", () => {
   $("reg-pin").value = "";
   $("reg-pin").focus();
@@ -1756,15 +2545,83 @@ $("pin-clear").addEventListener("click", () => {
   $("pin-input").focus();
 });
 demoBtn.addEventListener("click", startDemo);
-$("psn-resolve-btn").addEventListener("click", resolvePsnAccountId);
 $("stop-btn").addEventListener("click", stopSession);
 $("fullscreen-btn").addEventListener("click", () => {
   if (document.fullscreenElement) {
-    document.exitFullscreen();
+    ignorePromiseRejection(document.exitFullscreen());
   } else {
-    videoWrap.requestFullscreen?.();
+    ignorePromiseRejection(videoWrap.requestFullscreen?.());
   }
 });
+
+async function enterApp() {
+  contextReady = false;
+  lastShownContext = "";
+  const loaded = await loadHosts();
+  if (!loaded || !authModal.classList.contains("hidden")) return;
+  await loadStatus();
+  loadPsnLogin();
+  await discover({ quiet: true });
+  if (!authModal.classList.contains("hidden")) return;
+  const noConsoles = !state.hosts.length && !discoveredEl.querySelector(".nearby-tile");
+  const canAutoOpen = noConsoles
+    && !settingsIsOpen()
+    && !addIsOpen()
+    && !document.body.classList.contains("player-active");
+  if (canAutoOpen) openAddConsole({ auto: true });
+  primeContextToast();
+}
+
+$("auth-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const token = $("auth-token").value;
+  if (!token) return;
+  const button = $("auth-form").querySelector("button[type=submit]");
+  button.disabled = true;
+  $("auth-error").textContent = "";
+  try {
+    await api("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    });
+    hideAuthModal();
+    lockBtn.classList.remove("hidden");
+    enterApp();
+  } catch (e) {
+    $("auth-error").textContent = e.status === 401 ? "Invalid token." : e.message;
+    $("auth-token").select();
+  } finally {
+    button.disabled = false;
+  }
+});
+
+lockBtn.addEventListener("click", async () => {
+  if (state.sessionId || state.pc || state.detachedActive) {
+    try { await stopSession(); } catch {}
+  }
+  try {
+    await api("/api/auth/logout", { method: "POST", body: "{}" });
+  } catch {}
+  showAuthModal();
+});
+
+async function startApp() {
+  try {
+    const response = await fetch("/api/auth/status", { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const status = await response.json();
+    const required = !!status.required;
+    lockBtn.classList.toggle("hidden", !required);
+    if (required && !status.authenticated) {
+      showAuthModal();
+      return;
+    }
+    hideAuthModal();
+    enterApp();
+  } catch (e) {
+    toast(`Could not reach the server: ${e.message}`, true);
+  }
+}
 
 window.addEventListener("beforeunload", () => {
   if (state.sessionId) {
@@ -1772,6 +2629,7 @@ window.addEventListener("beforeunload", () => {
   }
 });
 
-loadHosts();
-loadStatus();
-loadPsnLogin();
+showHome();
+setBusy(false);
+loadSavedPsnAccount();
+startApp();

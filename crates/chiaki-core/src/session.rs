@@ -391,7 +391,7 @@ pub struct Session {
     pub commands: mpsc::Sender<SessionCommand>,
     outcome: watch::Receiver<Option<SessionOutcome>>,
     cancel: CancellationToken,
-    join: JoinHandle<()>,
+    join: Option<JoinHandle<()>>,
 }
 
 impl Session {
@@ -430,7 +430,7 @@ impl Session {
             commands: commands_tx,
             outcome: outcome_rx,
             cancel,
-            join,
+            join: Some(join),
         })
     }
 
@@ -468,19 +468,33 @@ impl Session {
     pub async fn stop(mut self) {
         let _ = self.commands.send(SessionCommand::Stop).await;
         self.cancel.cancel();
-        let _ = timeout(Duration::from_secs(3), &mut self.join).await;
-        self.join.abort();
+        if let Some(mut join) = self.join.take() {
+            let _ = timeout(Duration::from_secs(3), &mut join).await;
+            join.abort();
+        }
     }
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
         // A dropped session must never leave its supervisor (and the console
-        // ctrl/Takion connections it owns) running. `stop` is the graceful
-        // path; this is the safety net for setup errors and losing a start
-        // race, where the session would otherwise keep the console busy.
+        // ctrl/Takion connections it owns) running. Cancellation lets the
+        // supervisor run its cleanup path (`ctrl.stop`, Takion close) instead
+        // of aborting it outright. Keep a short reaper so a supervisor stuck
+        // in a non-cancellable await cannot leak forever.
         self.cancel.cancel();
-        self.join.abort();
+        let Some(mut join) = self.join.take() else {
+            return;
+        };
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                if timeout(Duration::from_secs(5), &mut join).await.is_err() {
+                    join.abort();
+                }
+            });
+        } else {
+            join.abort();
+        }
     }
 }
 

@@ -37,6 +37,10 @@ const MSG_MIC_TOGGLE: u16 = 0x36;
 const MSG_DISPLAY_DEVICES: u16 = 0x910;
 
 const CTRL_TIMEOUT: Duration = Duration::from_secs(5);
+/// The console sends heartbeat requests on this connection. If it goes
+/// completely silent (power loss, network drop), fail the session instead of
+/// waiting forever for a read that will never complete.
+const CTRL_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_FRAME: usize = 1 << 20;
 
 #[derive(Debug)]
@@ -72,6 +76,16 @@ impl CtrlHandle {
         let _ = self.commands.send(CtrlCommand::Stop).await;
         self.cancel.cancel();
         let _ = timeout(Duration::from_secs(2), &mut self.join).await;
+        self.join.abort();
+    }
+}
+
+impl Drop for CtrlHandle {
+    fn drop(&mut self) {
+        // Early supervisor exits (setup errors, cancellation, losing a start
+        // race) drop this handle without calling `stop`. Cancel the task and
+        // abort it so the console's ctrl TCP connection cannot outlive it.
+        self.cancel.cancel();
         self.join.abort();
     }
 }
@@ -165,8 +179,12 @@ pub async fn connect(
             && decoded.len() == 16
         {
             let mut data = decoded;
-            if crypt.decrypt(remote_counter, &mut data).is_ok() {
-                remote_counter += 1;
+            // The remote counter is positional: it advances for this header
+            // even if decryption fails, or every later ctrl frame decrypts
+            // against the wrong counter.
+            let decrypt = crypt.decrypt(remote_counter, &mut data);
+            remote_counter += 1;
+            if decrypt.is_ok() {
                 server_type = Some(data[0]);
             }
         }
@@ -229,6 +247,8 @@ async fn run(
     let mut login_pin_requested = false;
     let mut keyboard_counter: u32 = 0;
     let enable_dualsense = connection.enable_dualsense;
+    let idle = tokio::time::sleep(CTRL_IDLE_TIMEOUT);
+    tokio::pin!(idle);
 
     loop {
         // Process any complete frames already buffered.
@@ -296,6 +316,14 @@ async fn run(
 
         tokio::select! {
             _ = cancel.cancelled() => break,
+            _ = &mut idle => {
+                tracing::warn!(
+                    "ctrl: console was silent for {} s; closing the session",
+                    CTRL_IDLE_TIMEOUT.as_secs()
+                );
+                let _ = events.send(CtrlEvent::Error(Error::Timeout));
+                break;
+            }
             read = reader.read_buf(&mut buf) => {
                 match read {
                     Ok(0) => {
@@ -303,7 +331,10 @@ async fn run(
                         let _ = events.send(CtrlEvent::Closed);
                         break;
                     }
-                    Ok(_) => {}
+                    Ok(_) => {
+                        idle.as_mut()
+                            .reset(tokio::time::Instant::now() + CTRL_IDLE_TIMEOUT);
+                    }
                     Err(e) => {
                         tracing::warn!("ctrl: read failed: {e}");
                         let _ = events.send(CtrlEvent::Error(Error::Network));
@@ -468,11 +499,15 @@ fn take_frame(
     let mut frame = buf.split_to(8 + payload_size);
     let payload = &mut frame[8..];
     if !payload.is_empty() {
-        if crypt.decrypt(*remote_counter, payload).is_err() {
+        // Advance even when decryption fails. The counter is tied to the
+        // frame position on the console's stream, not to our success; leaving
+        // it behind would silently desynchronize every later ctrl frame.
+        let decrypt = crypt.decrypt(*remote_counter, payload);
+        *remote_counter += 1;
+        if decrypt.is_err() {
             tracing::error!("ctrl payload decryption failed for type {ty:#x}");
             return None;
         }
-        *remote_counter += 1;
     }
     Some((ty, payload.to_vec()))
 }
@@ -505,6 +540,34 @@ async fn send_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn take_frame_advances_the_remote_counter() {
+        let crypt = RPCrypt {
+            target: Target::Ps5_1,
+            bright: [0x11; 16],
+            ambassador: [0x22; 16],
+        };
+        let mut encrypted = vec![1u8, 2, 3, 4];
+        crypt.encrypt(7, &mut encrypted).unwrap();
+        let mut direct = encrypted.clone();
+        assert!(crypt.decrypt(7, &mut direct).is_ok());
+        assert_eq!(direct, vec![1, 2, 3, 4]);
+        let mut buf = BytesMut::new();
+        buf.extend_from_slice(&(encrypted.len() as u32).to_be_bytes());
+        buf.extend_from_slice(&0xfeu16.to_be_bytes());
+        buf.extend_from_slice(&[0, 0]);
+        buf.extend_from_slice(&encrypted);
+        assert_eq!(buf.len(), 12);
+        assert_eq!(u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]), 4);
+
+        let mut counter = 7;
+        let (ty, payload) = take_frame(&mut buf, &crypt, &mut counter).unwrap();
+        assert_eq!(ty, 0xfe);
+        assert_eq!(payload, vec![1, 2, 3, 4]);
+        assert_eq!(counter, 8);
+        assert!(buf.is_empty());
+    }
 
     #[test]
     fn session_id_validation() {

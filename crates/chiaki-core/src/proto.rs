@@ -104,30 +104,24 @@ impl<'a> Reader<'a> {
         let value = match wire {
             0 => Value::Varint(self.varint()?),
             1 => {
-                let s = self
-                    .buf
-                    .get(self.pos..self.pos + 8)
-                    .ok_or(Error::BufferTooSmall)?;
-                self.pos += 8;
+                let end = self.pos.checked_add(8).ok_or(Error::BufferTooSmall)?;
+                let s = self.buf.get(self.pos..end).ok_or(Error::BufferTooSmall)?;
+                self.pos = end;
                 let mut v = [0u8; 8];
                 v.copy_from_slice(s);
                 Value::Fixed64(v)
             }
             2 => {
-                let len = self.varint()? as usize;
-                let s = self
-                    .buf
-                    .get(self.pos..self.pos + len)
-                    .ok_or(Error::BufferTooSmall)?;
-                self.pos += len;
+                let len = usize::try_from(self.varint()?).map_err(|_| Error::BufferTooSmall)?;
+                let end = self.pos.checked_add(len).ok_or(Error::BufferTooSmall)?;
+                let s = self.buf.get(self.pos..end).ok_or(Error::BufferTooSmall)?;
+                self.pos = end;
                 Value::Bytes(s)
             }
             5 => {
-                let s = self
-                    .buf
-                    .get(self.pos..self.pos + 4)
-                    .ok_or(Error::BufferTooSmall)?;
-                self.pos += 4;
+                let end = self.pos.checked_add(4).ok_or(Error::BufferTooSmall)?;
+                let s = self.buf.get(self.pos..end).ok_or(Error::BufferTooSmall)?;
+                self.pos = end;
                 let mut v = [0u8; 4];
                 v.copy_from_slice(s);
                 Value::Fixed32(v)
@@ -199,5 +193,15 @@ mod tests {
             r.next_field().unwrap(),
             Some((7, Value::Varint(u32::MAX as u64)))
         );
+    }
+
+    #[test]
+    fn oversized_length_is_rejected_without_overflow() {
+        // Field 1, wire type 2, followed by a length varint of u64::MAX.
+        let data = [
+            0x0a, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01,
+        ];
+        let mut r = Reader::new(&data);
+        assert!(r.next_field().is_err());
     }
 }

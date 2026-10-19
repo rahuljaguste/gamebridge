@@ -1,187 +1,348 @@
 <!doctype html>
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>PS Remote Play</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2310131a'/%3E%3Cpath d='M11 9.5v13l11-6.5z' fill='%234f8df7'/%3E%3C/svg%3E">
+<title>Setu</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2310131a'/%3E%3Cpath d='M11 9.5v13l11-6.5z' fill='%236f9bff'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 <header class="topbar">
   <div class="brand">
-    <span class="brand-mark" aria-hidden="true"></span>
-    <h1>PS Remote Play</h1>
+    <span class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 40 40">
+        <defs>
+          <linearGradient id="setu-mark-bg" x1="6" y1="2" x2="35" y2="39" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#2a4c8d"/>
+            <stop offset=".58" stop-color="#142a54"/>
+            <stop offset="1" stop-color="#091227"/>
+          </linearGradient>
+          <linearGradient id="setu-mark-arch" x1="12" y1="10" x2="28" y2="28" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#dbe7ff"/>
+            <stop offset="1" stop-color="#7fa1ff"/>
+          </linearGradient>
+        </defs>
+        <rect x="1" y="1" width="38" height="38" rx="11" fill="url(#setu-mark-bg)" stroke="rgba(255,255,255,.16)"/>
+        <path d="M11.5 27.4v-7.5a8.5 8.5 0 0 1 17 0v7.5" fill="none" stroke="url(#setu-mark-arch)" stroke-width="2.6" stroke-linecap="round"/>
+        <path d="M18 16.8v8.4l6.9-4.2z" fill="#fff"/>
+      </svg>
+    </span>
+    <h1>Setu</h1>
   </div>
   <div class="topbar-right">
-    <span id="conn-status" class="status-pill" role="status" aria-live="polite">Idle</span>
-    <span id="stats" class="stats" title="Round-trip time to the console · packets received · packets lost"></span>
+    <button id="lock-btn" class="icon-button hidden" type="button" title="Lock this bridge" aria-label="Lock this bridge">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="5" y="10.2" width="14" height="10" rx="2.6"/>
+        <path d="M8.6 10.2V7.8a3.4 3.4 0 0 1 6.8 0v2.4"/>
+      </svg>
+    </button>
+    <button id="settings-home-btn" class="icon-button" type="button" title="Settings" aria-label="Settings">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Z"/>
+        <path d="M19.4 13.5a7.8 7.8 0 0 0 .05-1.5 7.8 7.8 0 0 0-.05-1.5l1.7-1.3-1.8-3.1-2 .8a7.7 7.7 0 0 0-2.6-1.5l-.3-2.1h-3.6l-.3 2.1a7.7 7.7 0 0 0-2.6 1.5l-2-.8-1.8 3.1 1.7 1.3a7.8 7.8 0 0 0 0 3l-1.7 1.3 1.8 3.1 2-.8a7.7 7.7 0 0 0 2.6 1.5l.3 2.1h3.6l.3-2.1a7.7 7.7 0 0 0 2.6-1.5l2 .8 1.8-3.1-1.7-1.3Z"/>
+      </svg>
+    </button>
   </div>
 </header>
 
-<main class="layout">
-  <aside class="sidebar">
-    <section class="panel">
-      <div class="panel-head">
-        <h2>Consoles</h2>
-        <button id="discover-btn" class="ghost small" type="button">Scan</button>
-      </div>
-      <div id="hosts" class="host-list">
-        <p class="empty">No consoles registered yet.</p>
-      </div>
-      <button id="demo-btn" class="ghost small hidden" type="button" style="margin-top:10px">Start demo stream</button>
-    </section>
-
-    <section class="panel">
-      <details id="register-panel">
-        <summary><h2>Register a console</h2></summary>
-        <form id="register-form" autocomplete="off">
-          <label>Console IP / hostname
-            <input id="reg-host" name="host" placeholder="192.168.1.50" required>
-          </label>
-          <label>Console type
-            <select id="reg-target" name="target">
-              <option value="ps5_1" selected>PS5</option>
-              <option value="ps4_10">PS4 (8.0+)</option>
-              <option value="ps4_9">PS4 (7.0)</option>
-              <option value="ps4_8">PS4 (older)</option>
-            </select>
-          </label>
-          <label for="reg-pin">PIN shown on console</label>
-          <div class="inline-row">
-            <input id="reg-pin" name="pin" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="12345678" required>
-            <button id="reg-pin-clear" class="ghost small" type="button">Clear</button>
+<main class="app">
+  <section id="home-view" class="home-view">
+    <div class="home-inner">
+      <header class="home-header">
+        <div class="home-header-row">
+          <div class="home-heading">
+            <p class="eyebrow">Setu</p>
+            <h2>Your consoles</h2>
           </div>
-          <label>PSN Account ID
-            <input id="reg-account" name="psn_account_id" placeholder="1234567890123456789" spellcheck="false">
-          </label>
-          <div class="psn-helper">
-            <p class="hint">Only have a PSN username? <a id="psn-login-link" href="#" target="_blank" rel="noopener">Sign in to PSN</a>, then copy the URL from the address bar after the redirect page and paste it below.</p>
-            <div class="inline-row">
-              <input id="psn-redirect" placeholder="Redirect URL containing ?code=…" spellcheck="false">
-              <button id="psn-resolve-btn" class="ghost small" type="button">Get ID</button>
+          <button id="discover-btn" class="icon-button scan-btn" type="button" title="Scan for consoles" aria-label="Scan for consoles">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
+              <path d="M21 3v6h-6"/>
+            </svg>
+          </button>
+        </div>
+        <p class="subtitle">Choose a console and start playing.</p>
+      </header>
+
+      <div class="tile-grid">
+        <button id="add-console-btn" class="console-tile add-tile" type="button">
+          <span class="add-plus" aria-hidden="true">+</span>
+          <span class="tile-caption">
+            <span class="tile-name">Add console</span>
+            <span class="tile-meta">Pair with the PIN shown on your console</span>
+          </span>
+        </button>
+        <div id="hosts" class="tile-contents"></div>
+        <div id="discovered" class="tile-contents"></div>
+      </div>
+
+      <button id="demo-btn" class="quiet demo-btn hidden" type="button">Start demo stream</button>
+
+      <p class="legal">
+        Unofficial client · Not affiliated with or endorsed by Sony Interactive Entertainment ·
+        All trademarks are the property of their respective owners · Use at your own risk.
+      </p>
+    </div>
+  </section>
+
+  <section id="player-view" class="player-view hidden">
+    <div id="video-wrap" class="video-wrap">
+      <video id="video" autoplay playsinline></video>
+      <canvas id="video-sharp" class="video-sharp hidden" aria-hidden="true"></canvas>
+
+      <div id="video-overlay" class="player-overlay">
+        <div class="player-card">
+          <span class="spinner" aria-hidden="true"></span>
+          <p class="eyebrow">Setu</p>
+          <h3 id="overlay-title">Connecting…</h3>
+          <p id="overlay-text" class="muted">Requesting a session from the console.</p>
+        </div>
+      </div>
+
+      <div id="hint" class="hint-overlay hidden">Click the video to capture the mouse · Esc releases</div>
+
+      <div id="player-bar" class="player-bar hidden">
+        <div class="player-meta">
+          <span id="conn-status" class="status-pill" role="status" aria-live="polite">Idle</span>
+          <span id="stats" class="stats" title="Round-trip time to the console · packets received · packets lost"></span>
+        </div>
+        <div class="player-actions">
+          <button id="settings-btn" class="player-btn" type="button">Settings</button>
+          <button id="fullscreen-btn" class="player-btn" type="button">Fullscreen</button>
+          <button id="stop-btn" class="player-btn danger" type="button" disabled>Stop</button>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="add-overlay" class="drawer-overlay add-overlay" aria-hidden="true" inert>
+  <aside id="add-drawer" class="drawer-panel add-drawer" role="dialog" aria-labelledby="add-title" tabindex="-1">
+    <header class="drawer-head add-head">
+      <div>
+        <p class="eyebrow">Setu</p>
+        <h2 id="add-title">Add a console</h2>
+        <p class="subtle">Enter the address and the PIN shown on the console.</p>
+      </div>
+      <button id="add-close" class="icon-btn" type="button" aria-label="Close add console">×</button>
+    </header>
+
+    <form id="register-form" autocomplete="off">
+      <div class="add-body">
+        <div class="field-block">
+          <div class="field-label-row">
+            <label for="reg-host">Console address</label>
+            <button id="host-help-btn" class="help-btn" type="button" title="How to find the console address" aria-label="How to find the console address" aria-expanded="false" aria-controls="host-help">?</button>
+          </div>
+          <div class="field-row">
+            <input id="reg-host" name="host" placeholder="192.168.1.50" required>
+            <button id="reg-detect-btn" class="secondary small" type="button">Detect</button>
+          </div>
+          <div id="host-help" class="field-help hidden">
+            On the console, open <strong>Settings → Network → View Connection Status</strong>. The IP address is listed there. The console and this server must be on the same network. If a Nearby console tile appears on the home screen, choose it to fill this in automatically.
+          </div>
+        </div>
+        <div id="reg-target-status" class="detect-status" role="status" aria-live="polite">
+          <span class="detect-dot" aria-hidden="true"></span>
+          <span id="reg-target-text">Console type is detected automatically.</span>
+        </div>
+        <input id="reg-target" type="hidden" value="">
+        <fieldset class="target-picker">
+          <legend>Console type</legend>
+          <label class="target-option"><input type="radio" name="console-type" value="ps5_1"><span>PS5</span></label>
+          <label class="target-option"><input type="radio" name="console-type" value="ps4_10"><span>PS4 8.0+</span></label>
+          <label class="target-option"><input type="radio" name="console-type" value="ps4_9"><span>PS4 7.0</span></label>
+          <label class="target-option"><input type="radio" name="console-type" value="ps4_8"><span>PS4 older</span></label>
+        </fieldset>
+
+        <div class="field-block">
+          <div class="field-label-row">
+            <label for="reg-pin">PIN shown on console</label>
+            <button id="pin-help-btn" class="help-btn" type="button" title="How to find the pairing PIN" aria-label="How to find the pairing PIN" aria-expanded="false" aria-controls="pin-help">?</button>
+          </div>
+          <div class="field-row">
+            <input id="reg-pin" name="pin" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="12345678" required>
+            <button id="reg-pin-clear" class="secondary small" type="button">Clear</button>
+          </div>
+          <div id="pin-help" class="field-help hidden">
+            The console shows an 8-digit PIN when you start pairing. <strong>PS5:</strong> Settings → System → Remote Play → Link Device. <strong>PS4:</strong> Settings → Remote Play Connection Settings → Add Device. Enter it before it expires.
+          </div>
+        </div>
+
+        <label>Name (optional)
+          <input id="reg-name" name="name" placeholder="Living room console">
+        </label>
+
+        <div class="advanced-fields">
+          <p class="field-section-label">PSN account</p>
+          <div class="field-block">
+            <div class="field-label-row">
+              <label for="reg-account">PSN Account ID</label>
+            </div>
+            <div class="field-row">
+              <input id="reg-account" name="psn_account_id" placeholder="1234567890123456789" spellcheck="false">
+              <button id="reg-account-clear" class="secondary small hidden" type="button" title="Forget the saved PSN Account ID on this device">Forget</button>
+            </div>
+            <p id="reg-hint" class="hint">Optional on most consoles. Decimal, hex, or base64; converted automatically. Saved on this device.</p>
+          </div>
+          <div class="field-block">
+            <div class="field-label-row">
+              <label for="reg-psn-code">PSN redirect URL or code</label>
+              <a id="psn-login-link" class="psn-login-link hidden" href="#" target="_blank" rel="noopener">Get a code</a>
+            </div>
+            <div class="field-row">
+              <input id="reg-psn-code" placeholder="Paste the redirect URL or code" autocomplete="off" spellcheck="false">
+              <button id="psn-code-fetch" class="secondary small" type="button">Get ID</button>
+            </div>
+            <p class="hint">Open PSN sign-in and sign in. If the page lands on a blank or error page, copy its entire address from the browser. It contains <code>?code=…</code>.</p>
+            <div id="psn-code-status" class="detect-status" role="status" aria-live="polite">
+              <span class="detect-dot" aria-hidden="true"></span>
+              <span id="psn-code-text">Paste the redirect URL or code; the Account ID is filled automatically.</span>
+            </div>
+          </div>
+          <div class="field-block">
+            <div class="field-label-row">
+              <label for="reg-psn-lookup">PSN Online ID (public lookup)</label>
+            </div>
+            <div class="field-row">
+              <input id="reg-psn-lookup" placeholder="PSN username" autocomplete="off" spellcheck="false">
+              <button id="psn-lookup-btn" class="secondary small" type="button">Look Up</button>
+            </div>
+            <div id="psn-lookup-status" class="detect-status" role="status" aria-live="polite">
+              <span class="detect-dot" aria-hidden="true"></span>
+              <span id="psn-lookup-text">Third-party lookup via psn.flipscreen.games. PSN privacy must allow anyone to find you.</span>
             </div>
           </div>
           <label>PSN Online ID (PS4 pre-7.0 only)
             <input id="reg-online" name="psn_online_id" placeholder="Online ID">
           </label>
-          <label>Label (optional)
-            <input id="reg-name" name="name" placeholder="Living room PS5">
-          </label>
           <label class="check">
             <input id="reg-broadcast" type="checkbox" name="broadcast">
-            Search by broadcast (if the console rejects a direct request)
+            Search by broadcast if the console rejects a direct request
           </label>
-          <button id="register-btn" class="primary" type="submit">Register</button>
-          <p id="reg-hint" class="hint">Enter the numeric Account ID, hex, or a base64 value; it is converted automatically. If you only know your PSN username, use the sign-in helper above.</p>
-        </form>
-      </details>
-    </section>
-
-    <section id="discovered-panel" class="panel hidden">
-      <h2>Found on network</h2>
-      <div id="discovered" class="host-list"></div>
-    </section>
-  </aside>
-
-  <section class="stage">
-    <div id="video-wrap" class="video-wrap">
-      <video id="video" autoplay playsinline></video>
-      <canvas id="video-sharp" class="video-sharp hidden" aria-hidden="true"></canvas>
-      <div id="video-overlay" class="video-overlay">
-        <div class="overlay-card">
-          <p class="eyebrow">Remote Play</p>
-          <h3 id="overlay-title">Select a console to begin</h3>
-          <p id="overlay-text" class="muted">Registration pairs this browser bridge with your PS4 or PS5.</p>
         </div>
       </div>
-      <div id="hint" class="hint-overlay hidden">Click the video to capture the mouse · Esc releases</div>
-    </div>
 
-    <div class="controls">
-      <label>Resolution
-        <select id="opt-resolution">
-          <option value="1080p" selected>1080p</option>
-          <option value="720p">720p</option>
-          <option value="540p">540p</option>
-          <option value="360p">360p</option>
-        </select>
-      </label>
-      <label>FPS
-        <select id="opt-fps">
-          <option value="60" selected>60</option>
-          <option value="30">30</option>
-        </select>
-      </label>
-      <label>Bitrate (kbps)
-        <input id="opt-bitrate" type="number" min="100" max="100000" placeholder="auto"
-               title="Higher bitrates preserve more detail and motion. 20000–30000 often helps 1080p.">
-      </label>
-      <label>Sharpness
-        <span class="slider-row">
-          <input id="opt-sharpness" type="range" min="0" max="100" step="5" value="35">
-          <span id="sharpness-value" class="muted slider-value">35</span>
-        </span>
-      </label>
-      <label class="check" title="Experimental. Known to make the PS5 Remote Play server crash after repeated sessions.">
-        <input id="opt-dualsense" type="checkbox">
-        DualSense feedback (experimental)
-      </label>
-      <button id="stop-btn" class="danger" type="button" disabled>Stop</button>
-      <button id="fullscreen-btn" class="ghost" type="button">Fullscreen</button>
-    </div>
+      <footer class="drawer-actions add-actions">
+        <button id="add-cancel" class="secondary" type="button">Cancel</button>
+        <button id="register-btn" class="primary" type="submit">Add console</button>
+      </footer>
+    </form>
+  </aside>
+</div>
 
-    <div class="controls picture">
-      <label>Brightness
-        <span class="slider-row">
-          <input id="opt-brightness" type="range" min="-100" max="100" step="5" value="15">
-          <span id="brightness-value" class="muted slider-value">15</span>
-        </span>
-      </label>
-      <label>Contrast
-        <span class="slider-row">
-          <input id="opt-contrast" type="range" min="-100" max="100" step="5" value="20">
-          <span id="contrast-value" class="muted slider-value">20</span>
-        </span>
-      </label>
-      <label>Saturation
-        <span class="slider-row">
-          <input id="opt-saturation" type="range" min="-100" max="100" step="5" value="20">
-          <span id="saturation-value" class="muted slider-value">20</span>
-        </span>
-      </label>
-      <label>Temporal
-        <span class="slider-row">
-          <input id="opt-temporal" type="range" min="0" max="100" step="5" value="0">
-          <span id="temporal-value" class="muted slider-value">0</span>
-        </span>
-      </label>
-      <button id="picture-reset" class="ghost" type="button">Reset picture</button>
-    </div>
-
-    <details class="legend">
-      <summary>Controls</summary>
-      <div class="legend-grid">
-        <span><kbd>WASD</kbd> left stick</span>
-        <span><kbd>Mouse</kbd> right stick (captured)</span>
-        <span><kbd>Left click</kbd> R2</span>
-        <span><kbd>Right click</kbd> L2</span>
-        <span><kbd>Space</kbd> Cross</span>
-        <span><kbd>J</kbd> Moon</span>
-        <span><kbd>K</kbd> Box</span>
-        <span><kbd>L</kbd> Pyramid</span>
-        <span><kbd>Arrows</kbd> D-pad</span>
-        <span><kbd>Q / E</kbd> L1 / R1</span>
-        <span><kbd>Z / C</kbd> L2 / R2</span>
-        <span><kbd>Tab</kbd> Touchpad</span>
-        <span><kbd>Enter</kbd> Options</span>
-        <span><kbd>Backspace</kbd> Share</span>
-        <span><kbd>F / G</kbd> L3 / R3</span>
+<div id="settings-overlay" class="drawer-overlay settings-overlay" aria-hidden="true" inert>
+  <div id="settings-scrim" class="drawer-scrim settings-scrim"></div>
+  <aside id="settings-drawer" class="drawer-panel settings-drawer" role="dialog" aria-modal="true" aria-labelledby="settings-title" tabindex="-1">
+    <header class="drawer-head">
+      <div>
+        <p class="eyebrow">Setu</p>
+        <h2 id="settings-title">Settings</h2>
       </div>
-      <p class="hint">A standard gamepad (Xbox, DualShock, DualSense) is used automatically. On touch screens, touching the video drives the touchpad.</p>
-    </details>
-  </section>
-</main>
+      <button id="settings-close" class="icon-btn" type="button" aria-label="Close settings">×</button>
+    </header>
+
+    <div class="segmented settings-tabs" role="tablist" aria-label="Settings sections">
+      <button id="settings-stream-tab" class="active" type="button" role="tab" aria-selected="true">Stream</button>
+      <button id="settings-picture-tab" type="button" role="tab" aria-selected="false">Picture</button>
+      <button id="settings-input-tab" type="button" role="tab" aria-selected="false">Input</button>
+    </div>
+
+    <div class="settings-body">
+      <div id="settings-stream" class="settings-panel" role="tabpanel" aria-labelledby="settings-stream-tab">
+        <div class="settings-grid">
+          <label>Resolution
+            <select id="opt-resolution">
+              <option value="1080p" selected>1080p</option>
+              <option value="720p">720p</option>
+              <option value="540p">540p</option>
+              <option value="360p">360p</option>
+            </select>
+          </label>
+          <label>Frame rate
+            <select id="opt-fps">
+              <option value="60" selected>60 fps</option>
+              <option value="30">30 fps</option>
+            </select>
+          </label>
+          <label>Bitrate
+            <input id="opt-bitrate" type="number" min="100" max="100000" placeholder="Auto" title="Higher bitrates preserve more detail and motion. 20000–30000 often helps 1080p.">
+          </label>
+        </div>
+        <p class="hint">Resolution and frame rate are requested from the console. Higher bitrates preserve more detail at the cost of network bandwidth.</p>
+      </div>
+
+      <div id="settings-picture" class="settings-panel hidden" role="tabpanel" aria-labelledby="settings-picture-tab">
+        <label>Sharpness
+          <span class="slider-row">
+            <input id="opt-sharpness" type="range" min="0" max="100" step="5" value="35">
+            <span id="sharpness-value" class="slider-value">35</span>
+          </span>
+        </label>
+        <label>Brightness
+          <span class="slider-row">
+            <input id="opt-brightness" type="range" min="-100" max="100" step="5" value="15">
+            <span id="brightness-value" class="slider-value">15</span>
+          </span>
+        </label>
+        <label>Contrast
+          <span class="slider-row">
+            <input id="opt-contrast" type="range" min="-100" max="100" step="5" value="20">
+            <span id="contrast-value" class="slider-value">20</span>
+          </span>
+        </label>
+        <label>Saturation
+          <span class="slider-row">
+            <input id="opt-saturation" type="range" min="-100" max="100" step="5" value="20">
+            <span id="saturation-value" class="slider-value">20</span>
+          </span>
+        </label>
+        <label>Temporal smoothing
+          <span class="slider-row">
+            <input id="opt-temporal" type="range" min="0" max="100" step="5" value="0">
+            <span id="temporal-value" class="slider-value">0</span>
+          </span>
+        </label>
+        <button id="picture-reset" class="secondary" type="button">Reset picture</button>
+      </div>
+
+      <div id="settings-input" class="settings-panel hidden" role="tabpanel" aria-labelledby="settings-input-tab">
+        <label class="check">
+          <input id="opt-dualsense" type="checkbox">
+          DualSense feedback (experimental)
+        </label>
+        <p class="hint">May make the console's streaming server unstable after repeated sessions.</p>
+        <details class="legend">
+          <summary>Keyboard and controller</summary>
+          <div class="legend-grid">
+            <span><kbd>WASD</kbd> left stick</span>
+            <span><kbd>Mouse</kbd> right stick (captured)</span>
+            <span><kbd>Left click</kbd> R2</span>
+            <span><kbd>Right click</kbd> L2</span>
+            <span><kbd>Space</kbd> Cross</span>
+            <span><kbd>J</kbd> Moon</span>
+            <span><kbd>K</kbd> Box</span>
+            <span><kbd>L</kbd> Pyramid</span>
+            <span><kbd>Arrows</kbd> D-pad</span>
+            <span><kbd>Q / E</kbd> L1 / R1</span>
+            <span><kbd>Z / C</kbd> L2 / R2</span>
+            <span><kbd>Tab</kbd> Touchpad</span>
+            <span><kbd>Enter</kbd> Options</span>
+            <span><kbd>Backspace</kbd> Share</span>
+            <span><kbd>F / G</kbd> L3 / R3</span>
+          </div>
+          <p class="hint">A standard gamepad is used automatically. On touch screens, touching the video drives the touchpad.</p>
+        </details>
+      </div>
+    </div>
+
+    <footer class="drawer-actions">
+      <button id="settings-done" class="primary" type="button">Done</button>
+    </footer>
+  </aside>
+</div>
 
 <div id="pin-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="pin-title">
   <div class="modal-card">
@@ -190,14 +351,27 @@
     <p id="pin-text" class="muted">The console is asking for its login PIN. Enter the PIN shown on your console.</p>
     <form id="pin-form">
       <input id="pin-input" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="PIN" autocomplete="off" required>
-      <button id="pin-clear" class="ghost small" type="button">Clear</button>
-      <button id="pin-cancel" class="ghost small" type="button">Cancel</button>
+      <button id="pin-clear" class="secondary small" type="button">Clear</button>
+      <button id="pin-cancel" class="secondary small" type="button">Cancel</button>
       <button class="primary" type="submit">Send PIN</button>
     </form>
   </div>
 </div>
 
-<div id="toast" class="toast hidden" role="alert" aria-live="assertive"></div>
+<div id="auth-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+  <div class="modal-card auth-card">
+    <p class="eyebrow">Server access</p>
+    <h2 id="auth-title">Unlock this bridge</h2>
+    <p class="muted">Enter the access token configured on the server.</p>
+    <form id="auth-form">
+      <input id="auth-token" type="password" autocomplete="current-password" placeholder="Access token" spellcheck="false" required>
+      <button class="primary" type="submit">Unlock</button>
+    </form>
+    <p id="auth-error" class="error" role="alert"></p>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden" role="alert" aria-live="assertive" title="Dismiss"></div>
 <script type="module" src="/app.js"></script>
 </body>
 </html>

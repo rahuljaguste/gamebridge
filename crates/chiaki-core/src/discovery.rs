@@ -181,6 +181,39 @@ pub async fn discover(duration: Duration) -> Result<Vec<DiscoveryHost>> {
     Ok(hosts.into_values().collect())
 }
 
+/// Send SRCH to one host on both discovery ports and return the first
+/// response. This is the unicast form used when a user enters a console IP
+/// instead of broadcasting.
+pub async fn discover_host(host: IpAddr, duration: Duration) -> Result<Option<DiscoveryHost>> {
+    if !host.is_ipv4() {
+        return Err(Error::Unsupported("discovery is IPv4-only".into()));
+    }
+    let sock = UdpSocket::bind("0.0.0.0:0")
+        .await
+        .map_err(|_| Error::Network)?;
+    let srch4 = srch_packet(false);
+    let srch5 = srch_packet(true);
+    for (packet, port) in [(&srch4, DISCOVERY_PORT_PS4), (&srch5, DISCOVERY_PORT_PS5)] {
+        let _ = sock.send_to(packet, SocketAddr::new(host, port)).await;
+    }
+
+    let deadline = Instant::now() + duration;
+    let mut buf = [0u8; 1024];
+    loop {
+        match timeout_at(deadline, sock.recv_from(&mut buf)).await {
+            Ok(Ok((n, peer))) => {
+                if peer.ip() == host
+                    && let Ok(host) = parse_srch_response(peer, &buf[..n])
+                {
+                    return Ok(Some(host));
+                }
+            }
+            Ok(Err(_)) => return Err(Error::Network),
+            Err(_) => return Ok(None),
+        }
+    }
+}
+
 /// Send a wakeup packet. The reference client parses the regist key's raw
 /// bytes as an ASCII hex string; we do the same and report unsupported when
 /// the key does not fit.
@@ -258,5 +291,22 @@ mod tests {
         let host = parse_srch_response(addr, buf).unwrap();
         assert_eq!(host.state, Some(HostState::Standby));
         assert_eq!(host.target(), Target::Ps4_10);
+    }
+
+    #[test]
+    fn target_from_system_versions() {
+        assert_eq!(Target::from_system_version("7000000", false), Target::Ps4_9);
+        assert_eq!(Target::from_system_version("6500000", false), Target::Ps4_8);
+        assert_eq!(Target::from_system_version("8050001", true), Target::Ps5_1);
+    }
+
+    #[tokio::test]
+    async fn unicast_rejects_ipv6() {
+        let result = discover_host(
+            std::net::Ipv6Addr::LOCALHOST.into(),
+            Duration::from_millis(1),
+        )
+        .await;
+        assert!(matches!(result, Err(Error::Unsupported(_))));
     }
 }

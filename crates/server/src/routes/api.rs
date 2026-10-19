@@ -2,6 +2,7 @@
 //! JSON API.
 
 use std::net::IpAddr;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -9,13 +10,17 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
+use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use chiaki_core::discovery;
 use chiaki_core::regist::{self, RegistInfo};
 use chiaki_core::session::{ConnectInfo, Session, SessionOptions};
-use chiaki_core::target::{Fps, Resolution, VideoProfile};
+use chiaki_core::target::{Codec, Fps, Resolution, VideoProfile};
+use rtc::peer_connection::configuration::RTCOfferOptions;
 use rtc::peer_connection::sdp::RTCSessionDescription;
 
 use crate::config::{StoredHost, parse_target, target_string};
@@ -207,30 +212,61 @@ pub struct DiscoveryView {
     pub running_app_titleid: String,
 }
 
+impl From<discovery::DiscoveryHost> for DiscoveryView {
+    fn from(host: discovery::DiscoveryHost) -> Self {
+        let target = target_string(host.target()).to_string();
+        Self {
+            host_addr: host.host_addr,
+            host_id: host.host_id,
+            host_name: host.host_name,
+            state: host
+                .state
+                .map(|state| state.as_str().to_string())
+                .unwrap_or_default(),
+            system_version: host.system_version,
+            target,
+            running_app_name: host.running_app_name,
+            running_app_titleid: host.running_app_titleid,
+        }
+    }
+}
+
 pub async fn discover(
     State(_state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<DiscoveryView>>, ApiError> {
     let hosts = discovery::discover(Duration::from_secs(2))
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
-    Ok(Json(
-        hosts
-            .into_iter()
-            .map(|h| {
-                let target = target_string(h.target()).to_string();
-                DiscoveryView {
-                    host_addr: h.host_addr,
-                    host_id: h.host_id,
-                    host_name: h.host_name,
-                    state: h.state.map(|s| s.as_str().to_string()).unwrap_or_default(),
-                    system_version: h.system_version,
-                    target,
-                    running_app_name: h.running_app_name,
-                    running_app_titleid: h.running_app_titleid,
-                }
-            })
-            .collect(),
-    ))
+    Ok(Json(hosts.into_iter().map(DiscoveryView::from).collect()))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DetectRequest {
+    pub host: String,
+}
+
+/// Unicast SRC lookup used by the registration form. The console's discovery
+/// response carries `system-version` and the discovery protocol version, which
+/// is enough to pick the correct registration target.
+pub async fn detect(
+    State(_state): State<Arc<AppState>>,
+    Json(request): Json<DetectRequest>,
+) -> Result<Json<DiscoveryView>, ApiError> {
+    let host = request.host.trim();
+    if host.is_empty() {
+        return Err(ApiError::bad_request("host is required"));
+    }
+    let ip = tokio::net::lookup_host((host, 0))
+        .await
+        .map_err(|_| ApiError::bad_request("could not resolve host"))?
+        .find(|addr| addr.is_ipv4())
+        .map(|addr| addr.ip())
+        .ok_or_else(|| ApiError::bad_request("no IPv4 address for host"))?;
+    let found = discovery::discover_host(ip, Duration::from_millis(1200))
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?
+        .ok_or_else(|| ApiError::not_found("no console responded to discovery"))?;
+    Ok(Json(found.into()))
 }
 
 pub async fn wakeup(
@@ -357,15 +393,21 @@ pub async fn start_session(
         };
     }
 
+    // The browser can only render H.264 today. Rejecting other codecs here is
+    // better than negotiating HEVC in the core and then never forwarding a
+    // frame to the H.264 WebRTC track.
+    if video.codec != Codec::H264 {
+        return Err(ApiError::bad_request(
+            "H.265 is not supported by the browser bridge yet; use H.264",
+        ));
+    }
+
     let mut info = ConnectInfo::new(target, host.host.clone(), regist_key, morning, video);
     info.enable_dualsense = request.enable_dualsense;
 
-    let mut session = Session::start(info, SessionOptions::default())
-        .map_err(|e| ApiError::internal(e.to_string()))?;
-    let events_rx = session.take_events();
-    let video_rx = session.take_video();
-    let audio_rx = session.take_audio();
-
+    // Build the peer before opening a console session. If any WebRTC setup
+    // step fails, no console session exists yet, so there is nothing to leak
+    // or to stop gracefully.
     let peers = webrtc::create_peer(state.events.clone())
         .await
         .map_err(|e| ApiError::internal(format!("WebRTC setup failed: {e:#}")))?;
@@ -374,6 +416,17 @@ pub async fn start_session(
     let id = Uuid::new_v4();
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
 
+    let mut session = match Session::start(info, SessionOptions::default()) {
+        Ok(session) => session,
+        Err(e) => {
+            let _ = peers.peer.close().await;
+            return Err(ApiError::internal(e.to_string()));
+        }
+    };
+    let events_rx = session.take_events();
+    let video_rx = session.take_video();
+    let audio_rx = session.take_audio();
+
     let active = ActiveSession {
         id,
         host_id: request.host_id.clone(),
@@ -381,6 +434,7 @@ pub async fn start_session(
         commands: session.commands.clone(),
         peer: peers.peer.clone(),
         peer_connected: peers.connected.clone(),
+        gathering: peers.gathering.clone(),
         stop_tx: Some(stop_tx),
         started: Instant::now(),
     };
@@ -389,6 +443,9 @@ pub async fn start_session(
         if slot.is_some() {
             drop(slot);
             let _ = peers.peer.close().await;
+            // A losing start race must release any session the supervisor
+            // opened, rather than dropping it and aborting the cleanup path.
+            session.stop().await;
             return Err(ApiError::conflict("a session is already active"));
         }
         *slot = Some(active);
@@ -396,9 +453,15 @@ pub async fn start_session(
     start.disarm();
 
     let manager_state = state.clone();
+    let panic_state = state.clone();
+    let session_id = id.to_string();
+    let manager_session_id = session_id.clone();
+    let bridge_cancel = CancellationToken::new();
+    let panic_cancel = bridge_cancel.clone();
+    let panic_peer = peers.peer.clone();
     let manager_peers = peers;
     tokio::spawn(async move {
-        manager::run(
+        let result = AssertUnwindSafe(manager::run(
             manager_state,
             id,
             session,
@@ -407,14 +470,37 @@ pub async fn start_session(
             audio_rx,
             manager_peers,
             shared,
+            bridge_cancel,
             frame_duration,
             stop_rx,
-        )
+        ))
+        .catch_unwind()
         .await;
+        if result.is_err() {
+            tracing::error!("session manager panicked; cleaning up bridge tasks and peer");
+            // The manager's own cleanup path did not run. Cancel its bridge
+            // tasks (including the 1 Hz stats reporter) and close the peer so
+            // no task or UDP socket is left behind.
+            panic_cancel.cancel();
+            panic_state.publish(crate::state::ServerEvent::Quit {
+                session_id: manager_session_id.clone(),
+                reason: "Unknown Error in Stream Connection".to_string(),
+                reason_string: Some("internal session error".to_string()),
+            });
+            *panic_state.last_session_error.lock().await =
+                Some("internal session error".to_string());
+            {
+                let mut active = panic_state.active.lock().await;
+                if active.as_ref().map(|a| a.id) == Some(id) {
+                    *active = None;
+                }
+            }
+            let _ = timeout(Duration::from_secs(5), panic_peer.close()).await;
+        }
     });
 
     Ok(Json(StartResponse {
-        session_id: id.to_string(),
+        session_id,
         offer: RtcDescription {
             kind: "offer".to_string(),
             sdp: offer_sdp,
@@ -441,6 +527,20 @@ pub async fn psn_account_id(
         "user_id": account.user_id,
         "account_id": chiaki_core::util::base64::encode(&account.account_id),
     })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PsnPublicLookupRequest {
+    pub online_id: String,
+}
+
+pub async fn psn_public_lookup(
+    Json(request): Json<PsnPublicLookupRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let account_id = psn::public_lookup(&request.online_id)
+        .await
+        .map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
+    Ok(Json(serde_json::json!({ "account_id": account_id })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -477,6 +577,56 @@ pub async fn answer(
         .await
         .map_err(|e| ApiError::internal(format!("set remote description failed: {e}")))?;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RestartRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RestartResponse {
+    pub offer: RtcDescription,
+}
+
+/// Re-offer the existing WebRTC peer with fresh ICE credentials. The browser
+/// answers through `/api/session/answer`; the console session is untouched.
+pub async fn restart_session(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<RestartRequest>,
+) -> Result<Json<RestartResponse>, ApiError> {
+    let (peer, gathering) = {
+        let active = state.active.lock().await;
+        match active.as_ref() {
+            Some(session) if session.id.to_string() == request.session_id => {
+                (session.peer.clone(), session.gathering.clone())
+            }
+            Some(_) => {
+                return Err(ApiError::conflict(
+                    "restart does not match the active session",
+                ));
+            }
+            None => return Err(ApiError::not_found("no active session")),
+        }
+    };
+    let offer = peer
+        .create_offer(Some(RTCOfferOptions { ice_restart: true }))
+        .await
+        .map_err(|e| ApiError::internal(format!("ICE restart offer failed: {e}")))?;
+    peer.set_local_description(offer)
+        .await
+        .map_err(|e| ApiError::internal(format!("ICE restart description failed: {e}")))?;
+    let _ = tokio::time::timeout(Duration::from_secs(3), gathering.notified()).await;
+    let local = peer
+        .local_description()
+        .await
+        .ok_or_else(|| ApiError::internal("missing ICE restart description"))?;
+    Ok(Json(RestartResponse {
+        offer: RtcDescription {
+            kind: "offer".to_string(),
+            sdp: local.sdp,
+        },
+    }))
 }
 
 pub async fn stop_session(

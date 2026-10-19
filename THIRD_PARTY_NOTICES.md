@@ -1,5 +1,18 @@
 # Third-party notices
 
+## Chiaki
+
+This project is a derivative work of **Chiaki v2.2.0**, Copyright (C) the
+Chiaki contributors, licensed under the GNU Affero General Public License,
+version 3 only, with the OpenSSL linking exception (AGPL-3.0-only-OpenSSL).
+
+Source: <https://git.sr.ht/~thestr4ng3r/chiaki>
+
+The protocol key tables in `crates/chiaki-core/src/crypto/rpcrypt_keys.rs` and
+the PSN OAuth client constants in `crates/server/src/psn.rs` originate from
+Chiaki's public source. They were not extracted from a Sony SDK, firmware, or
+decompiled Sony software by this project.
+
 ## AMD FidelityFX Super Resolution 1.0 (EASU and RCAS)
 
 The WebGL2 sharpening pipeline in `crates/server/src/static/app.js` is a port

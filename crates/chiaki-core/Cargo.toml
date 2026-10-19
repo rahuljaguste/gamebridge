@@ -1,8 +1,9 @@
 [package]
 name = "chiaki-core"
-description = "Rust port of the Chiaki PlayStation Remote Play protocol core"
+description = "Unofficial Rust port of the Chiaki protocol core"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish = false
 

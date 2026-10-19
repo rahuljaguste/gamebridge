@@ -87,11 +87,10 @@ pub async fn run(
     audio_rx: mpsc::Receiver<AudioFrame>,
     peers: PeerHandles,
     shared: Arc<MediaShared>,
+    bridge_cancel: CancellationToken,
     frame_duration: Duration,
     mut stop_rx: oneshot::Receiver<()>,
 ) {
-    let bridge_cancel = CancellationToken::new();
-
     let forwarder_cancel = bridge_cancel.clone();
     let forwarder_shared = shared.clone();
     let forwarder_state = state.clone();
@@ -214,6 +213,7 @@ pub async fn run(
         tracing::info!("session ended: {reason}");
     }
     state.publish(ServerEvent::Quit {
+        session_id: id.to_string(),
         reason: reason.as_str().to_string(),
         reason_string: detail.clone(),
     });
