@@ -3,14 +3,17 @@ resolver = "2"
 members = ["crates/chiaki-core", "crates/server"]
 
 [workspace.package]
-version = "0.2.5"
+version = "0.4.2"
 edition = "2024"
+rust-version = "1.97"
 license = "AGPL-3.0-only"
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
-panic = "abort"
+# The session manager catches panics and clears the active slot; aborting
+# would make that supervisor unreachable in release builds.
+panic = "unwind"
 
 [profile.dev]
 opt-level = 1

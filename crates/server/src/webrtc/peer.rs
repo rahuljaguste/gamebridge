@@ -95,6 +95,7 @@ pub struct PeerHandles {
     pub video: TrackWriter,
     pub audio: TrackWriter,
     pub connected: Arc<AtomicBool>,
+    pub gathering: Arc<Notify>,
     pub offer_sdp: String,
 }
 
@@ -200,85 +201,96 @@ pub async fn create_peer(events: broadcast::Sender<ServerEvent>) -> Result<PeerH
         .context("build peer connection")?;
     let peer: Arc<dyn PeerConnection> = Arc::new(peer);
 
-    let stream_id = "ps-remoteplay-stream".to_string();
-    let video_ssrc = rand::random::<u32>();
-    let video_track = Arc::new(
-        TrackLocalStaticSample::new(
-            Instant::now(),
-            MediaStreamTrack::new(
-                stream_id.clone(),
-                "ps-remoteplay-video".to_string(),
-                "Remote Play Video".to_string(),
-                RtpCodecKind::Video,
-                vec![RTCRtpEncodingParameters {
-                    rtp_coding_parameters: RTCRtpCodingParameters {
-                        ssrc: Some(video_ssrc),
+    // Everything after `build()` can still fail. Keep the peer handle alive
+    // and close it on any error; otherwise its UDP sockets remain bound on
+    // every advertised interface.
+    let handle_result: Result<PeerHandles> = async {
+        let stream_id = "setu-stream".to_string();
+        let video_ssrc = rand::random::<u32>();
+        let video_track = Arc::new(
+            TrackLocalStaticSample::new(
+                Instant::now(),
+                MediaStreamTrack::new(
+                    stream_id.clone(),
+                    "setu-video".to_string(),
+                    "Setu Video".to_string(),
+                    RtpCodecKind::Video,
+                    vec![RTCRtpEncodingParameters {
+                        rtp_coding_parameters: RTCRtpCodingParameters {
+                            ssrc: Some(video_ssrc),
+                            ..Default::default()
+                        },
+                        codec: video_codec.rtp_codec.clone(),
                         ..Default::default()
-                    },
-                    codec: video_codec.rtp_codec.clone(),
-                    ..Default::default()
-                }],
-            ),
-        )
-        .context("create video track")?,
-    );
-    let video_sender = peer
-        .add_track(Arc::clone(&video_track) as Arc<dyn TrackLocal>)
-        .await
-        .context("add video track")?;
+                    }],
+                ),
+            )
+            .context("create video track")?,
+        );
+        let video_sender = peer
+            .add_track(Arc::clone(&video_track) as Arc<dyn TrackLocal>)
+            .await
+            .context("add video track")?;
 
-    let audio_ssrc = rand::random::<u32>();
-    let audio_track = Arc::new(
-        TrackLocalStaticSample::new(
-            Instant::now(),
-            MediaStreamTrack::new(
-                stream_id,
-                "ps-remoteplay-audio".to_string(),
-                "Remote Play Audio".to_string(),
-                RtpCodecKind::Audio,
-                vec![RTCRtpEncodingParameters {
-                    rtp_coding_parameters: RTCRtpCodingParameters {
-                        ssrc: Some(audio_ssrc),
+        let audio_ssrc = rand::random::<u32>();
+        let audio_track = Arc::new(
+            TrackLocalStaticSample::new(
+                Instant::now(),
+                MediaStreamTrack::new(
+                    stream_id,
+                    "setu-audio".to_string(),
+                    "Setu Audio".to_string(),
+                    RtpCodecKind::Audio,
+                    vec![RTCRtpEncodingParameters {
+                        rtp_coding_parameters: RTCRtpCodingParameters {
+                            ssrc: Some(audio_ssrc),
+                            ..Default::default()
+                        },
+                        codec: audio_codec.rtp_codec.clone(),
                         ..Default::default()
-                    },
-                    codec: audio_codec.rtp_codec.clone(),
-                    ..Default::default()
-                }],
-            ),
-        )
-        .context("create audio track")?,
-    );
-    let audio_sender = peer
-        .add_track(Arc::clone(&audio_track) as Arc<dyn TrackLocal>)
-        .await
-        .context("add audio track")?;
+                    }],
+                ),
+            )
+            .context("create audio track")?,
+        );
+        let audio_sender = peer
+            .add_track(Arc::clone(&audio_track) as Arc<dyn TrackLocal>)
+            .await
+            .context("add audio track")?;
 
-    let video_pt = payload_type(&video_sender, H264_PAYLOAD_TYPE).await;
-    let audio_pt = payload_type(&audio_sender, OPUS_PAYLOAD_TYPE).await;
+        let video_pt = payload_type(&video_sender, H264_PAYLOAD_TYPE).await;
+        let audio_pt = payload_type(&audio_sender, OPUS_PAYLOAD_TYPE).await;
 
-    let offer = peer.create_offer(None).await.context("create offer")?;
-    peer.set_local_description(offer)
-        .await
-        .context("set local description")?;
-    let _ = tokio::time::timeout(Duration::from_secs(3), gathering.notified()).await;
-    let local = peer
-        .local_description()
-        .await
-        .context("missing local description")?;
+        let offer = peer.create_offer(None).await.context("create offer")?;
+        peer.set_local_description(offer)
+            .await
+            .context("set local description")?;
+        let _ = tokio::time::timeout(Duration::from_secs(3), gathering.notified()).await;
+        let local = peer
+            .local_description()
+            .await
+            .context("missing local description")?;
 
-    Ok(PeerHandles {
-        peer,
-        video: TrackWriter {
-            track: video_track,
-            ssrc: video_ssrc,
-            payload_type: Arc::new(AtomicU16::new(video_pt as u16)),
-        },
-        audio: TrackWriter {
-            track: audio_track,
-            ssrc: audio_ssrc,
-            payload_type: Arc::new(AtomicU16::new(audio_pt as u16)),
-        },
-        connected,
-        offer_sdp: local.sdp,
-    })
+        Ok(PeerHandles {
+            peer: Arc::clone(&peer),
+            video: TrackWriter {
+                track: video_track,
+                ssrc: video_ssrc,
+                payload_type: Arc::new(AtomicU16::new(video_pt as u16)),
+            },
+            audio: TrackWriter {
+                track: audio_track,
+                ssrc: audio_ssrc,
+                payload_type: Arc::new(AtomicU16::new(audio_pt as u16)),
+            },
+            connected,
+            gathering: Arc::clone(&gathering),
+            offer_sdp: local.sdp,
+        })
+    }
+    .await;
+    if handle_result.is_err() {
+        let _ = peer.close().await;
+    }
+    handle_result
 }

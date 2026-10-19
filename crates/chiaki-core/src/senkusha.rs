@@ -335,8 +335,12 @@ pub async fn run(host: IpAddr, cancel: &CancellationToken) -> Result<SenkushaRes
 
 async fn rtt_test(conn: &mut Conn, cancel: &CancellationToken) -> Result<u64> {
     let echo_on = encode_echo(true);
-    conn.send_data_wait_ack(8, &echo_on, cancel, Duration::from_secs(1))
-        .await?;
+    if !conn
+        .send_data_wait_ack(8, &echo_on, cancel, Duration::from_secs(1))
+        .await?
+    {
+        return Err(Error::Timeout);
+    }
 
     let mut acc = 0u64;
     let mut successful = 0u64;
@@ -352,8 +356,12 @@ async fn rtt_test(conn: &mut Conn, cancel: &CancellationToken) -> Result<u64> {
     }
 
     let echo_off = encode_echo(false);
-    conn.send_data_wait_ack(8, &echo_off, cancel, Duration::from_secs(1))
-        .await?;
+    if !conn
+        .send_data_wait_ack(8, &echo_off, cancel, Duration::from_secs(1))
+        .await?
+    {
+        return Err(Error::Timeout);
+    }
 
     if successful == 0 {
         return Err(Error::Timeout);
@@ -505,8 +513,15 @@ async fn mtu_out_test(
     }
 
     let final_cmd = encode_client_mtu_command(2, max, false, Some(mtu_in));
-    conn.send_data_wait_ack(8, &final_cmd, cancel, Duration::from_secs(2))
-        .await?;
+    // chiaki-ng sends the final client-MTU command with id 2 and waits only
+    // for its transport ACK; the command is advisory and has no id-2 protocol
+    // response. Still fail fast when that ACK never arrives.
+    if !conn
+        .send_data_wait_ack(8, &final_cmd, cancel, Duration::from_secs(2))
+        .await?
+    {
+        return Err(Error::Timeout);
+    }
     Ok(min)
 }
 

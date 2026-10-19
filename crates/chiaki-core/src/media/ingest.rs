@@ -14,6 +14,7 @@ use crate::media::video::scan_annex_b;
 use crate::packet_stats::PacketStats;
 use crate::takion::packet::AvPacket;
 use crate::takion::{TakionCommand, seq16_gt, seq16_lt};
+use crate::target::Codec;
 
 #[derive(Debug, Clone)]
 pub struct VideoProfileInfo {
@@ -64,10 +65,11 @@ struct VideoReceiver {
     frame_index_prev: Option<u16>,
     frame_index_prev_complete: u16,
     processor: FrameProcessor,
+    codec: Codec,
 }
 
 impl VideoReceiver {
-    fn new() -> Self {
+    fn new(codec: Codec) -> Self {
         Self {
             profiles: Vec::new(),
             profile_cur: None,
@@ -75,6 +77,7 @@ impl VideoReceiver {
             frame_index_prev: None,
             frame_index_prev_complete: 0,
             processor: FrameProcessor::new(),
+            codec,
         }
     }
 
@@ -135,15 +138,31 @@ impl VideoReceiver {
                     end: frame_index.wrapping_sub(1),
                 });
             }
-            self.frame_index_cur = Some(frame_index);
             if self.processor.alloc_frame(packet, &data).is_err() {
+                // Leave `frame_index_cur` unchanged. Advancing it here would
+                // make later packets for this frame look like duplicates and
+                // could assemble the next frame against the bad geometry.
                 tracing::warn!("failed to allocate frame {frame_index}");
                 return;
             }
+            self.frame_index_cur = Some(frame_index);
         }
 
-        if self.processor.put_unit(packet, &data).is_err() {
-            tracing::warn!("failed to put unit for frame {frame_index}");
+        if self.processor.is_flushed() {
+            // The frame flushed as soon as its source units arrived; FEC
+            // units and retransmissions can legitimately trail behind.
+            return;
+        }
+        if let Err(error) = self.processor.put_unit(packet, &data) {
+            tracing::warn!(
+                frame = frame_index,
+                unit = packet.unit_index,
+                total = packet.units_in_frame_total,
+                fec = packet.units_in_frame_fec,
+                data_len = data.len(),
+                %error,
+                "failed to put video unit"
+            );
             return;
         }
         if self.frame_index_cur != self.frame_index_prev && self.processor.flush_possible() {
@@ -178,7 +197,7 @@ impl VideoReceiver {
         };
         let profile = self.profile_cur.unwrap_or(0);
         let info = self.profiles.get(profile);
-        let scan = scan_annex_b(&data);
+        let scan = scan_annex_b(&data, self.codec);
         let frame = VideoFrame {
             data: Bytes::from(data),
             frame_index: cur,
@@ -186,7 +205,7 @@ impl VideoReceiver {
             width: info.map(|p| p.width).unwrap_or(0),
             height: info.map(|p| p.height).unwrap_or(0),
             is_idr: scan.is_idr,
-            has_param_sets: scan.has_sps || scan.has_pps,
+            has_param_sets: scan.has_vps || scan.has_sps || scan.has_pps,
         };
         if video_tx.try_send(frame).is_err() {
             tracing::warn!("video queue full; dropping frame {cur}");
@@ -209,9 +228,10 @@ pub async fn run(
     events: mpsc::UnboundedSender<MediaEvent>,
     takion: mpsc::Sender<TakionCommand>,
     stats: Arc<PacketStats>,
+    codec: Codec,
     cancel: CancellationToken,
 ) {
-    let mut video = VideoReceiver::new();
+    let mut video = VideoReceiver::new(codec);
     let mut audio: Option<AudioReceiver> = None;
 
     loop {
@@ -248,5 +268,70 @@ pub async fn run(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn packet(frame: u16, unit: u16, total: u16, fec: u16, data_len: usize) -> AvPacket {
+        AvPacket {
+            packet_index: 0,
+            frame_index: frame,
+            uses_nalu_info_structs: false,
+            is_video: true,
+            is_haptics: false,
+            unit_index: unit,
+            units_in_frame_total: total,
+            units_in_frame_fec: fec,
+            codec: 3,
+            word_at_0x18: 0,
+            adaptive_stream_index: 0,
+            byte_at_0x2c: 0,
+            key_pos: 0,
+            data_offset: 0,
+            data_len,
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_allocation_does_not_advance_the_frame_index() {
+        let mut receiver = VideoReceiver::new(Codec::H264);
+        receiver.profiles.push(VideoProfileInfo {
+            width: 1920,
+            height: 1080,
+            header: Bytes::new(),
+        });
+        let (video_tx, _video_rx) = mpsc::channel(4);
+        let (events, _event_rx) = mpsc::unbounded_channel();
+        let (takion, _takion_rx) = mpsc::channel(4);
+        let stats = PacketStats::new();
+
+        let bad = packet(5, 0, 1, 2, 4);
+        receiver
+            .on_packet(
+                &bad,
+                Bytes::from_static(&[0, 0, 0, 0]),
+                &video_tx,
+                &events,
+                &takion,
+                &stats,
+            )
+            .await;
+        assert_eq!(receiver.frame_index_cur, None);
+
+        let good = packet(5, 0, 3, 1, 5);
+        receiver
+            .on_packet(
+                &good,
+                Bytes::from_static(&[0, 3, 0xaa, 0xbb, 0xcc]),
+                &video_tx,
+                &events,
+                &takion,
+                &stats,
+            )
+            .await;
+        assert_eq!(receiver.frame_index_cur, Some(5));
     }
 }

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
 """Extract byte/uint64 constants from one C test function into Rust consts.
 
 Usage: python3 -I tools/gen_test_vectors.py <test.c> <function> <out.rs>

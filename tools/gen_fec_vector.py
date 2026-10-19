@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
 """Extract the first FEC test case from Chiaki's fec_test_cases.inl."""
 import re
 import sys

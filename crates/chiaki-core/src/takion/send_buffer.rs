@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 use crate::takion::seq32_lt;
 
 pub const RESEND_TIMEOUT: Duration = Duration::from_millis(200);
-pub const RESEND_TRIES_MAX: u64 = 10;
+/// Stop waiting for a cumulative ACK after this many retransmissions. At the
+/// default 200 ms timeout this is roughly five seconds of a silent console.
+pub const RESEND_TRIES_MAX: u64 = 25;
 
 #[derive(Debug)]
 struct Entry {
@@ -56,17 +58,27 @@ impl SendBuffer {
             .retain(|e| !(e.seq_num == seq_num || seq32_lt(e.seq_num, seq_num)));
     }
 
-    /// Mark all due packets as retransmitted and return their bytes.
-    pub fn take_due(&mut self, now: Instant) -> Vec<Vec<u8>> {
+    /// Mark all due packets as retransmitted and return their bytes. The
+    /// second value is true once a packet has exceeded `RESEND_TRIES_MAX`;
+    /// the caller should treat the peer as dead rather than retrying forever.
+    pub fn take_due(&mut self, now: Instant) -> (Vec<Vec<u8>>, bool) {
         let mut out = Vec::new();
+        let mut exhausted = false;
         for entry in &mut self.entries {
             if now.saturating_duration_since(entry.last_sent) > RESEND_TIMEOUT {
+                if entry.tries >= RESEND_TRIES_MAX {
+                    exhausted = true;
+                    continue;
+                }
                 entry.last_sent = now;
                 entry.tries += 1;
                 out.push(entry.buf.clone());
             }
         }
-        out
+        if exhausted {
+            self.entries.clear();
+        }
+        (out, exhausted)
     }
 
     pub fn clear(&mut self) {
@@ -110,7 +122,29 @@ mod tests {
         let now = Instant::now();
         let mut b = SendBuffer::new(2);
         b.push(1, vec![1], now);
-        assert!(b.take_due(now).is_empty());
-        assert_eq!(b.take_due(now + Duration::from_millis(300)), vec![vec![1]]);
+        assert!(b.take_due(now).0.is_empty());
+        assert_eq!(
+            b.take_due(now + Duration::from_millis(300)).0,
+            vec![vec![1]]
+        );
+    }
+
+    #[test]
+    fn unacked_packets_eventually_declare_the_peer_dead() {
+        let now = Instant::now();
+        let mut b = SendBuffer::new(2);
+        b.push(1, vec![1], now);
+        let mut at = now;
+        for _ in 0..RESEND_TRIES_MAX {
+            at += Duration::from_millis(300);
+            let (due, exhausted) = b.take_due(at);
+            assert!(!exhausted);
+            assert_eq!(due, vec![vec![1]]);
+        }
+        at += Duration::from_millis(300);
+        let (due, exhausted) = b.take_due(at);
+        assert!(due.is_empty());
+        assert!(exhausted);
+        assert!(b.is_empty());
     }
 }

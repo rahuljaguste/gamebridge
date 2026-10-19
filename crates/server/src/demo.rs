@@ -17,6 +17,7 @@ use uuid::Uuid;
 use chiaki_core::controller::ControllerState;
 use chiaki_core::media::video::scan_annex_b;
 use chiaki_core::session::SessionCommand;
+use chiaki_core::target::Codec;
 
 use crate::routes::api::{ApiError, RtcDescription, StartResponse};
 use crate::state::{ActiveSession, AppState, ServerEvent};
@@ -66,6 +67,7 @@ pub async fn start(
         commands: cmd_tx,
         peer: peers.peer.clone(),
         peer_connected: peers.connected.clone(),
+        gathering: peers.gathering.clone(),
         stop_tx: Some(stop_tx),
         started: std::time::Instant::now(),
     };
@@ -114,7 +116,7 @@ async fn run(
     let connected = peers.connected.clone();
     let first_idr = access_units
         .iter()
-        .position(|au| scan_annex_b(au).is_idr)
+        .position(|au| scan_annex_b(au, Codec::H264).is_idr)
         .unwrap_or(0);
 
     // Cache SPS/PPS from the stream for IDR injection.
@@ -158,7 +160,7 @@ async fn run(
     let mut index = first_idr;
     loop {
         let au = access_units[index].clone();
-        let scan = scan_annex_b(&au);
+        let scan = scan_annex_b(&au, Codec::H264);
         let mut data = au;
         if scan.is_idr && !(scan.has_sps || scan.has_pps) {
             let params = shared.param_sets.lock().unwrap().clone();
@@ -205,6 +207,7 @@ async fn run(
 
 async fn finish(state: &AppState, id: Uuid, peers: &webrtc::PeerHandles, detail: &str) {
     state.publish(ServerEvent::Quit {
+        session_id: id.to_string(),
         reason: "Stopped".to_string(),
         reason_string: Some(detail.to_string()),
     });

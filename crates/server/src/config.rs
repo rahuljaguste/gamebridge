@@ -80,6 +80,71 @@ struct ConfigFile {
     hosts: Vec<StoredHost>,
 }
 
+const CONFIG_DIR_NAME: &str = "setu";
+/// The previous product name. Kept only to migrate existing registrations.
+const LEGACY_CONFIG_DIR_NAME: &str = "ps-remoteplay";
+
+fn resolve_default_dir() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("SETU_CONFIG_DIR") {
+        return Ok(PathBuf::from(dir));
+    }
+    let base = match std::env::var_os("XDG_CONFIG_HOME") {
+        Some(dir) => PathBuf::from(dir),
+        None => dirs::config_dir().context("could not determine config directory")?,
+    };
+    Ok(migrate_in(base))
+}
+
+/// Use `base/setu`, copying `base/ps-remoteplay/hosts.json` on first run so an
+/// existing console registration is not lost. The legacy directory is left
+/// untouched and is used as a fallback if the copy fails.
+fn migrate_in(base: PathBuf) -> PathBuf {
+    let dir = base.join(CONFIG_DIR_NAME);
+    let legacy = base.join(LEGACY_CONFIG_DIR_NAME);
+    let old_hosts = legacy.join("hosts.json");
+    let new_hosts = dir.join("hosts.json");
+    if !new_hosts.exists() && old_hosts.exists() {
+        match copy_legacy_hosts(&old_hosts, &new_hosts) {
+            Ok(()) => eprintln!(
+                "setu: migrated console registrations from {} to {}",
+                old_hosts.display(),
+                new_hosts.display()
+            ),
+            Err(error) => {
+                eprintln!(
+                    "setu: could not migrate {} to {}: {error}; using the legacy directory",
+                    old_hosts.display(),
+                    new_hosts.display()
+                );
+                return legacy;
+            }
+        }
+    }
+    dir
+}
+
+fn copy_legacy_hosts(old: &Path, new: &Path) -> Result<()> {
+    let data = fs::read(old).with_context(|| format!("failed to read {}", old.display()))?;
+    if let Some(parent) = new.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
+                .with_context(|| format!("failed to secure {}", parent.display()))?;
+        }
+    }
+    fs::write(new, data).with_context(|| format!("failed to write {}", new.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(new, fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("failed to secure {}", new.display()))?;
+    }
+    Ok(())
+}
+
 pub struct ConfigStore {
     path: PathBuf,
     inner: Mutex<ConfigFile>,
@@ -87,15 +152,14 @@ pub struct ConfigStore {
 
 impl ConfigStore {
     pub fn load(explicit_dir: Option<PathBuf>) -> Result<Self> {
-        let dir = explicit_dir
-            .or_else(|| std::env::var_os("PS_REMOTEPLAY_CONFIG_DIR").map(PathBuf::from))
-            .or_else(|| {
-                std::env::var_os("XDG_CONFIG_HOME")
-                    .map(PathBuf::from)
-                    .map(|p| p.join("ps-remoteplay"))
-            })
-            .or_else(|| dirs::config_dir().map(|p| p.join("ps-remoteplay")))
-            .context("could not determine config directory")?;
+        let dir = match explicit_dir {
+            Some(dir) => dir,
+            None => resolve_default_dir()?,
+        };
+        Self::load_from_dir(dir)
+    }
+
+    fn load_from_dir(dir: PathBuf) -> Result<Self> {
         let path = dir.join("hosts.json");
         let file = match fs::read(&path) {
             Ok(data) => serde_json::from_slice(&data)
@@ -167,5 +231,51 @@ impl ConfigStore {
         }
         fs::rename(&tmp, &self.path)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrates_legacy_directory_once() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let legacy = base.path().join(LEGACY_CONFIG_DIR_NAME);
+        fs::create_dir_all(&legacy).expect("legacy dir");
+        fs::write(legacy.join("hosts.json"), br#"{"hosts":[]}"#).expect("legacy hosts");
+
+        let dir = migrate_in(base.path().to_path_buf());
+        assert_eq!(dir, base.path().join(CONFIG_DIR_NAME));
+        assert_eq!(
+            fs::read(dir.join("hosts.json")).expect("migrated hosts"),
+            br#"{"hosts":[]}"#
+        );
+
+        // A later start must not overwrite the new file with the old one.
+        fs::write(dir.join("hosts.json"), br#"{"hosts":[1]}"#).expect("new hosts");
+        let again = migrate_in(base.path().to_path_buf());
+        assert_eq!(again, dir);
+        assert_eq!(
+            fs::read(dir.join("hosts.json")).expect("new hosts"),
+            br#"{"hosts":[1]}"#
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(dir.join("hosts.json"))
+                    .expect("metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+            assert_eq!(
+                fs::metadata(&dir).expect("metadata").permissions().mode() & 0o777,
+                0o700
+            );
+        }
     }
 }

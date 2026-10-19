@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Rust port of the Chiaki v2.2.0 PlayStation Remote Play protocol core.
+//! Unofficial Rust port of the Chiaki v2.2.0 Remote Play protocol core.
 //!
 //! The protocol constants and algorithms are derived from Chiaki by Florian
 //! Märkl and contributors, licensed AGPL-3.0-only-OpenSSL. This crate is

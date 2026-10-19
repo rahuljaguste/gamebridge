@@ -71,6 +71,10 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
 
     loop {
         tokio::select! {
+            _ = state.shutdown.cancelled() => {
+                let _ = socket.send(Message::Close(None)).await;
+                break;
+            }
             event = events.recv() => {
                 match event {
                     Ok(event) => {

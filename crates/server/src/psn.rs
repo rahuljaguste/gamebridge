@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! PSN sign-in helper, mirroring Chiaki's `scripts/psn-account-id.py`.
+//! PSN account-ID helpers.
 //!
-//! The user signs in on Sony's page, then pastes the redirect URL back into
-//! the web UI. Only the OAuth code is exchanged here; passwords never reach
-//! this server, and tokens are used once and discarded.
+//! The redirect-code flow mirrors Chiaki's `scripts/psn-account-id.py`: the
+//! user signs in on Sony's page, then pastes the redirect URL back into the web
+//! UI. Only the OAuth code is exchanged here; passwords never reach this
+//! server, and tokens are used once and discarded.
+//!
+//! The optional public lookup follows chiaki-ng's "Public Lookup" path and
+//! queries `psn.flipscreen.games` by PSN Online ID. It is a third-party
+//! service, requires the account's privacy setting to allow public search, and
+//! does not use a PSN password or token.
 
 use std::time::Duration;
 
@@ -13,13 +19,15 @@ use url::Url;
 
 use chiaki_core::regist::{PSN_ACCOUNT_ID_SIZE, parse_psn_account_id};
 
-// Public client credentials of the Remote Play Windows client, as used by
-// Chiaki's helper script.
+// Public client credentials inherited from Chiaki v2.2.0's AGPL source (its
+// PSN helper script). They were not extracted from a Sony SDK, firmware, or
+// decompiled Sony software by this project.
 const CLIENT_ID: &str = "ba495a24-818c-472b-b12d-ff231c1b5745";
 const CLIENT_SECRET: &str = "mvaiZkRsAsI1IBkY";
 const AUTH_URL: &str = "https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/authorize";
 const TOKEN_URL: &str = "https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/token";
 const REDIRECT_URI: &str = "https://remoteplay.dl.playstation.net/remoteplay/redirect";
+const PUBLIC_LOOKUP_URL: &str = "https://psn.flipscreen.games/search.php";
 
 #[derive(Debug)]
 pub struct PsnAccount {
@@ -65,7 +73,7 @@ pub fn extract_code(input: &str) -> Result<String> {
 
 fn client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
-        .user_agent(concat!("ps-remoteplay/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("setu/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(20))
         .build()
         .context("could not create the HTTP client")
@@ -148,6 +156,65 @@ pub async fn resolve_account_id(input: &str) -> Result<PsnAccount> {
     })
 }
 
+/// Look up the encoded Account ID by PSN Online ID using the public
+/// flipscreen.games service used by chiaki-ng. This does not authenticate with
+/// PSN; the account's privacy settings must allow anyone to find it in search.
+pub async fn public_lookup(online_id: &str) -> Result<String> {
+    let online_id = online_id.trim();
+    if online_id.is_empty() {
+        bail!("enter a PSN Online ID");
+    }
+    if online_id.len() > 64 {
+        bail!("PSN Online ID is too long");
+    }
+    let encoded: String = url::form_urlencoded::byte_serialize(online_id.as_bytes()).collect();
+    let response = client()?
+        .get(format!("{PUBLIC_LOOKUP_URL}?username={encoded}"))
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+        .context("could not reach the public lookup service")?;
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .context("could not read the public lookup response")?;
+    if !status.is_success() && text.trim().is_empty() {
+        bail!("public lookup service is currently unavailable");
+    }
+    let body: Value = serde_json::from_str(&text)
+        .context("public lookup returned a response that was not JSON")?;
+    parse_public_lookup(status, &body)
+}
+
+fn parse_public_lookup(status: reqwest::StatusCode, body: &Value) -> Result<String> {
+    if !status.is_success() {
+        let detail = body
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("public lookup service is unavailable");
+        bail!("{detail}");
+    }
+    let encoded_id = body
+        .get("encoded_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{}",
+                body.get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("PSN account not found or privacy settings block public lookup")
+            )
+        })?;
+    let bytes = chiaki_core::util::base64::decode(encoded_id)
+        .map_err(|_| anyhow::anyhow!("public lookup returned an invalid Account ID"))?;
+    if bytes.len() != PSN_ACCOUNT_ID_SIZE {
+        bail!("public lookup returned an invalid Account ID");
+    }
+    Ok(chiaki_core::util::base64::encode(&bytes))
+}
+
 /// Percent-encode a token used as a URL path segment. Mirrors Python's
 /// `quote(value)` default (`/` stays safe) used by Chiaki's helper.
 fn quote_path(value: &str) -> String {
@@ -197,5 +264,34 @@ mod tests {
     fn quotes_path_segment() {
         assert_eq!(quote_path("abc-._~/x"), "abc-._~/x");
         assert_eq!(quote_path("a b+c"), "a%20b%2Bc");
+    }
+
+    #[test]
+    fn parses_public_lookup_account_id() {
+        let body = serde_json::json!({
+            "online_id": "example",
+            "user_id": "0",
+            "encoded_id": "AAAAAAAAAAA="
+        });
+        assert_eq!(
+            parse_public_lookup(reqwest::StatusCode::OK, &body).unwrap(),
+            "AAAAAAAAAAA="
+        );
+    }
+
+    #[test]
+    fn reports_public_lookup_errors() {
+        let body = serde_json::json!({ "error": "account not found" });
+        let error = parse_public_lookup(reqwest::StatusCode::NOT_FOUND, &body)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("account not found"));
+        assert!(
+            parse_public_lookup(
+                reqwest::StatusCode::OK,
+                &serde_json::json!({ "encoded_id": "not-base64" })
+            )
+            .is_err()
+        );
     }
 }
