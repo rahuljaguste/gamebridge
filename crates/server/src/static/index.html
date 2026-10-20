@@ -4,8 +4,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Setu</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2310131a'/%3E%3Cpath d='M11 9.5v13l11-6.5z' fill='%236f9bff'/%3E%3C/svg%3E">
+<title>GameBridge</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%2310131a'/%3E%3Cpath d='M15.2 11.1a7.2 7.2 0 0 1 9.6 0' fill='none' stroke='%239db9ff' stroke-width='1.8' stroke-linecap='round'/%3E%3Cpath d='M17.2 13.5a4.2 4.2 0 0 1 5.6 0' fill='none' stroke='%23eef4ff' stroke-width='1.7' stroke-linecap='round'/%3E%3Ccircle cx='20' cy='15.7' r='1.05' fill='%23eef4ff'/%3E%3Crect x='7.4' y='17.8' width='25.2' height='14.4' rx='7.2' fill='none' stroke='%236f9bff' stroke-width='2.2'/%3E%3Cpath d='M13 25h5.2M15.6 22.4v5.2' fill='none' stroke='%23fff' stroke-width='1.7' stroke-linecap='round'/%3E%3Ccircle cx='25.1' cy='22.4' r='1.45' fill='%23fff'/%3E%3Ccircle cx='22.4' cy='25' r='1.45' fill='%23fff'/%3E%3Ccircle cx='27.8' cy='25' r='1.45' fill='%23fff'/%3E%3Ccircle cx='25.1' cy='27.6' r='1.45' fill='%239db9ff'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -14,22 +14,29 @@
     <span class="brand-mark" aria-hidden="true">
       <svg viewBox="0 0 40 40">
         <defs>
-          <linearGradient id="setu-mark-bg" x1="6" y1="2" x2="35" y2="39" gradientUnits="userSpaceOnUse">
+          <linearGradient id="gamebridge-mark-bg" x1="6" y1="2" x2="35" y2="39" gradientUnits="userSpaceOnUse">
             <stop stop-color="#2a4c8d"/>
             <stop offset=".58" stop-color="#142a54"/>
             <stop offset="1" stop-color="#091227"/>
           </linearGradient>
-          <linearGradient id="setu-mark-arch" x1="12" y1="10" x2="28" y2="28" gradientUnits="userSpaceOnUse">
+          <linearGradient id="gamebridge-mark-arch" x1="12" y1="10" x2="28" y2="28" gradientUnits="userSpaceOnUse">
             <stop stop-color="#dbe7ff"/>
             <stop offset="1" stop-color="#7fa1ff"/>
           </linearGradient>
         </defs>
-        <rect x="1" y="1" width="38" height="38" rx="11" fill="url(#setu-mark-bg)" stroke="rgba(255,255,255,.16)"/>
-        <path d="M11.5 27.4v-7.5a8.5 8.5 0 0 1 17 0v7.5" fill="none" stroke="url(#setu-mark-arch)" stroke-width="2.6" stroke-linecap="round"/>
-        <path d="M18 16.8v8.4l6.9-4.2z" fill="#fff"/>
+        <rect x="1" y="1" width="38" height="38" rx="11" fill="url(#gamebridge-mark-bg)" stroke="rgba(255,255,255,.16)"/>
+        <path d="M15.2 11.1a7.2 7.2 0 0 1 9.6 0" fill="none" stroke="#9db9ff" stroke-width="1.8" stroke-linecap="round"/>
+        <path d="M17.2 13.5a4.2 4.2 0 0 1 5.6 0" fill="none" stroke="#eef4ff" stroke-width="1.7" stroke-linecap="round"/>
+        <circle cx="20" cy="15.7" r="1.05" fill="#eef4ff"/>
+        <rect x="7.4" y="17.8" width="25.2" height="14.4" rx="7.2" fill="#071022" fill-opacity=".55" stroke="url(#gamebridge-mark-arch)" stroke-width="2.2"/>
+        <path d="M13 25h5.2M15.6 22.4v5.2" fill="none" stroke="#eef4ff" stroke-width="1.7" stroke-linecap="round"/>
+        <circle cx="25.1" cy="22.4" r="1.45" fill="#eef4ff"/>
+        <circle cx="22.4" cy="25" r="1.45" fill="#eef4ff"/>
+        <circle cx="27.8" cy="25" r="1.45" fill="#eef4ff"/>
+        <circle cx="25.1" cy="27.6" r="1.45" fill="#9db9ff"/>
       </svg>
     </span>
-    <h1>Setu</h1>
+    <h1>GameBridge</h1>
   </div>
   <div class="topbar-right">
     <button id="lock-btn" class="icon-button hidden" type="button" title="Lock this bridge" aria-label="Lock this bridge">
@@ -53,7 +60,7 @@
       <header class="home-header">
         <div class="home-header-row">
           <div class="home-heading">
-            <p class="eyebrow">Setu</p>
+            <p class="eyebrow">GameBridge</p>
             <h2>Your consoles</h2>
           </div>
           <button id="discover-btn" class="icon-button scan-btn" type="button" title="Scan for consoles" aria-label="Scan for consoles">
@@ -95,7 +102,7 @@
       <div id="video-overlay" class="player-overlay">
         <div class="player-card">
           <span class="spinner" aria-hidden="true"></span>
-          <p class="eyebrow">Setu</p>
+          <p class="eyebrow">GameBridge</p>
           <h3 id="overlay-title">Connecting…</h3>
           <p id="overlay-text" class="muted">Requesting a session from the console.</p>
         </div>
@@ -146,7 +153,7 @@
   <aside id="add-drawer" class="drawer-panel add-drawer" role="dialog" aria-labelledby="add-title" tabindex="-1">
     <header class="drawer-head add-head">
       <div>
-        <p class="eyebrow">Setu</p>
+        <p class="eyebrow">GameBridge</p>
         <h2 id="add-title">Add a console</h2>
         <p class="subtle">Enter the address and the PIN shown on the console.</p>
       </div>
@@ -271,7 +278,7 @@
   <aside id="settings-drawer" class="drawer-panel settings-drawer" role="dialog" aria-modal="true" aria-labelledby="settings-title" tabindex="-1">
     <header class="drawer-head">
       <div>
-        <p class="eyebrow">Setu</p>
+        <p class="eyebrow">GameBridge</p>
         <h2 id="settings-title">Settings</h2>
       </div>
       <button id="settings-close" class="icon-btn" type="button" aria-label="Close settings">×</button>

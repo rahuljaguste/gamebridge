@@ -96,7 +96,7 @@ jobs:
         if: matrix.target != 'x86_64-apple-darwin'
         shell: bash
         run: |
-          bin="target/${{ matrix.target }}/release/setu"
+          bin="target/${{ matrix.target }}/release/gamebridge"
           if [ "${{ runner.os }}" = "Windows" ]; then bin="$bin.exe"; fi
           "$bin" --version
 
@@ -106,9 +106,9 @@ jobs:
         run: |
           set -euo pipefail
           version=$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)
-          name="setu-${version}-${{ matrix.target }}"
+          name="gamebridge-${version}-${{ matrix.target }}"
           mkdir -p "dist/${name}"
-          cp "target/${{ matrix.target }}/release/setu" "dist/${name}/"
+          cp "target/${{ matrix.target }}/release/gamebridge" "dist/${name}/"
           cp README.md COPYING THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.md "dist/${name}/"
           tar -C dist -czf "dist/${name}.tar.gz" "${name}"
           rm -rf "dist/${name}"
@@ -118,9 +118,9 @@ jobs:
         shell: pwsh
         run: |
           $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"' | Select-Object -First 1).Matches[0].Groups[1].Value
-          $name = "setu-$version-${{ matrix.target }}"
+          $name = "gamebridge-$version-${{ matrix.target }}"
           New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/setu.exe" "dist/$name/"
+          Copy-Item "target/${{ matrix.target }}/release/gamebridge.exe" "dist/$name/"
           Copy-Item README.md,COPYING,THIRD_PARTY_NOTICES.md,THIRD_PARTY_LICENSES.md "dist/$name/"
           Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
           Remove-Item -Recurse -Force "dist/$name"
@@ -128,7 +128,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: setu-${{ matrix.target }}
+          name: gamebridge-${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
 
@@ -138,42 +138,61 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
 
+      - name: Source archive
+        run: |
+          set -euo pipefail
+          version=$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)
+          mkdir -p dist
+          git archive --format=tar.gz \
+            --prefix="gamebridge-${version}/" \
+            -o "dist/gamebridge-${version}-source.tar.gz" HEAD
+          test -s "dist/gamebridge-${version}-source.tar.gz"
+          tar -tzf "dist/gamebridge-${version}-source.tar.gz" >/dev/null
+
       - name: Checksums
         run: |
           cd dist
-          sha256sum * > SHA256SUMS
+          sha256sum $(ls -1 | grep -v '^SHA256SUMS$') > SHA256SUMS
 
       - name: Publish
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
           body: |
-            Prebuilt Setu binaries for this release.
+            Prebuilt GameBridge binaries for this release.
 
             | Platform | Asset |
             | --- | --- |
-            | macOS Apple Silicon | `setu-*-aarch64-apple-darwin.tar.gz` |
-            | macOS Intel | `setu-*-x86_64-apple-darwin.tar.gz` |
-            | Linux x86_64 (static musl) | `setu-*-x86_64-unknown-linux-musl.tar.gz` |
-            | Windows x86_64 | `setu-*-x86_64-pc-windows-msvc.zip` |
+            | macOS Apple Silicon | `gamebridge-*-aarch64-apple-darwin.tar.gz` |
+            | macOS Intel | `gamebridge-*-x86_64-apple-darwin.tar.gz` |
+            | Linux x86_64 (static musl) | `gamebridge-*-x86_64-unknown-linux-musl.tar.gz` |
+            | Windows x86_64 | `gamebridge-*-x86_64-pc-windows-msvc.zip` |
+            | Source (AGPL-3.0-only) | `gamebridge-*-source.tar.gz` |
 
             Verify your download against `SHA256SUMS`.
+
+            The source archive contains the exact Corresponding Source for the
+            binaries in this release.
 
             **Platform notes**
 
             - macOS binaries are unsigned and not notarized. If Gatekeeper
-              blocks the binary, run `xattr -d com.apple.quarantine setu`
+              blocks the binary, run `xattr -d com.apple.quarantine gamebridge`
               after extracting it, or right-click it and choose **Open**.
             - Windows SmartScreen may warn about an unsigned binary. Choose
               **More info → Run anyway** only if you trust the source.
             - The Linux binary is statically linked and should run on any
               x86_64 distribution.
 
-            Setu is an unofficial client and is not affiliated with or
+            GameBridge is an unofficial client and is not affiliated with or
             endorsed by Sony Interactive Entertainment. Use it at your own
             risk; see the Terms and risk section in `README.md`.

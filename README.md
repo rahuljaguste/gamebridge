@@ -1,21 +1,22 @@
-# Setu
+# GameBridge
 
 **Your console, in your browser.**
 
-> **Unofficial.** Setu is not affiliated with, endorsed by, or sponsored by
+> **Unofficial.** GameBridge is not affiliated with, endorsed by, or sponsored by
 > Sony Interactive Entertainment. PlayStation, PS4, PS5, PSN, and Remote Play
 > are trademarks of Sony Interactive Entertainment. Use at your own risk; see
 > [Terms and risk](#terms-and-risk).
 
-Setu is an unofficial, browser-based bridge for PlayStation Remote Play. It is
-a Rust reimplementation of the protocol, packaged as a localhost web server
-that streams a PS4 or PS5 into any browser over WebRTC.
+GameBridge is an unofficial, browser-based game-streaming bridge, currently
+focused on PlayStation Remote Play. It is a Rust reimplementation of the
+protocol, packaged as a localhost web server that streams a PS4 or PS5 into any
+browser over WebRTC.
 
 Browsers cannot open the raw UDP sockets Remote Play requires, so this project
 bridges the console protocol to the browser:
 
 ```
-Browser  ── HTTP + WebSocket ──▶  setu  ── TCP/UDP ──▶  Console
+Browser  ── HTTP + WebSocket ──▶  gamebridge  ── TCP/UDP ──▶  Console
    ▲                                  │
    └────── WebRTC (H.264/H.265 + Opus) ◀──┘
 ```
@@ -30,7 +31,7 @@ AGPL-3.0-only; see [Licensing](#licensing).
 
 ## Terms and risk
 
-Setu is an unofficial client. Using it may violate Sony's PlayStation Network
+GameBridge is an unofficial client. Using it may violate Sony's PlayStation Network
 terms of service or your console's Remote Play terms. You are responsible for
 complying with them. Console bans, account restrictions, firmware changes that
 break the protocol, and any other consequences are your own risk. The software
@@ -91,6 +92,30 @@ multi-controller, and microphone input. Remote binds require `--allow-remote`;
 optional token auth is covered under
 [LAN access and authentication](#lan-access-and-authentication).
 
+## Roadmap
+
+GameBridge currently supports PS4 and PS5. The long-term goal is one
+self-hosted browser bridge for multiple game sources, not a PlayStation-only
+tool.
+
+- **Now — PlayStation:** PS4/PS5 registration, session negotiation, H.264/H.265
+  (including HDR where supported), Opus audio, FEC, input, auto-wake, and
+  cross-session adaptive bitrate.
+- **Next — Xbox:** investigate Xbox remote/console streaming and add support
+  when the protocol, platform terms, and hardware testing allow. Xbox is not
+  implemented yet.
+- **Planned — Steam/PC:** add a Steam/PC streaming source so the same browser
+  client can play games running on a local PC.
+- **Exploring — Nintendo:** evaluate Nintendo console streaming where feasible;
+  no support is committed.
+- **Platform work:** multi-source console management, per-source capability
+  detection, multi-user/session isolation, TLS/reverse-proxy deployment, and
+  signed installers.
+
+These are directions, not delivery dates. Support depends on protocol access,
+platform terms, hardware testing, and maintainer time. GameBridge is unofficial
+and is not affiliated with Sony, Microsoft, Nintendo, or Valve.
+
 ## Requirements
 
 - Rust 1.97 or newer (edition 2024)
@@ -112,15 +137,17 @@ optional token auth is covered under
 
 Prebuilt binaries for macOS (Apple Silicon and Intel), Linux x86_64, and
 Windows x86_64 are published on the
-[Releases](https://github.com/rahuljaguste/setu/releases) page. Extract the
-archive and run `setu` (or `setu.exe`). The macOS binaries are unsigned; the
-release notes cover the Gatekeeper and SmartScreen prompts.
+[Releases](https://github.com/rahuljaguste/gamebridge/releases) page. Extract the
+archive and run `gamebridge` (or `gamebridge.exe`). The macOS binaries are unsigned; the
+release notes cover the Gatekeeper and SmartScreen prompts. Each release also
+includes `gamebridge-<version>-source.tar.gz`, the exact AGPL-3.0-only
+Corresponding Source for those binaries.
 
 ### Build from source
 
 ```sh
 cargo build --release
-./target/release/setu
+./target/release/gamebridge
 ```
 
 Then open <http://127.0.0.1:8080/>.
@@ -141,13 +168,15 @@ Options:
 | `--demo-file <file>` | — | Enable the demo endpoint with a local Annex-B H.264 stream. |
 | `--log-file <path>` | `<config dir>/server.log` | Also write logs to this file (stderr always gets them too). |
 
-The configuration directory is `$XDG_CONFIG_HOME/setu` (or the
-platform equivalent, e.g. `~/Library/Application Support/setu` on
-macOS). `SETU_CONFIG_DIR` overrides it, as does `--config-dir`. It is created
-with mode `0700`, and `hosts.json` with mode `0600`, because it contains
-console registration keys. On first run, a `hosts.json` from the previous
-`ps-remoteplay` directory is copied into `setu` automatically; the old
-directory is left untouched.
+The configuration directory is `$XDG_CONFIG_HOME/gamebridge` (or the
+platform equivalent, e.g. `~/Library/Application Support/gamebridge` on
+macOS). `GAMEBRIDGE_CONFIG_DIR` overrides it, as does `--config-dir`. The
+legacy `SETU_CONFIG_DIR` variable is still accepted. It is created with mode
+`0700`, and `hosts.json` with mode `0600`, because it contains console
+registration keys. On first run, a `hosts.json` from the previous `setu`
+directory is copied into `gamebridge` automatically; if that is absent, the
+older `ps-remoteplay` directory is used. The old directories are left
+untouched.
 
 ## LAN access and authentication
 
@@ -155,7 +184,7 @@ The bridge is loopback-only and unauthenticated by default. To let other
 devices on the LAN use it, bind a LAN address and pass `--allow-remote`:
 
 ```sh
-setu --bind 0.0.0.0:8080 --allow-remote
+gamebridge --bind 0.0.0.0:8080 --allow-remote
 ```
 
 That mode is open to anyone who can reach the port: they can start and stop
@@ -163,9 +192,9 @@ streams, send controller input, and delete registrations. To require a token,
 create one and pass it at startup:
 
 ```sh
-openssl rand -base64 32 > setu.token
-chmod 600 setu.token
-setu --bind 0.0.0.0:8080 --allow-remote --auth-token-file setu.token
+openssl rand -base64 32 > gamebridge.token
+chmod 600 gamebridge.token
+gamebridge --bind 0.0.0.0:8080 --allow-remote --auth-token-file gamebridge.token
 ```
 
 The first visit asks for the token and exchanges it for an `HttpOnly`,
@@ -208,7 +237,7 @@ auto-hides after a few seconds. Stop returns to the home screen.
 1. On the console, open the Remote Play pairing screen and note the PIN.
    **PS5:** Settings → System → Remote Play → Link Device. **PS4:** Settings →
    Remote Play Connection Settings → Add Device.
-2. On the Setu home screen, choose **Add console** (or choose a **Nearby** tile
+2. On the GameBridge home screen, choose **Add console** (or choose a **Nearby** tile
    for a console that appeared automatically). In the panel, enter the console
    address and wait for **Detect** to read the SRC discovery response. The
    matching console-type radio is selected automatically; choose one manually
@@ -246,7 +275,7 @@ ffmpeg -f lavfi -i testsrc=size=1280x720:rate=30 -t 20 \
        -c:v libx264 -profile:v baseline -pix_fmt yuv420p \
        -x264-params aud=1 -f h264 demo.h264
 
-cargo run -p setu-server -- --demo-file demo.h264
+cargo run -p gamebridge-server -- --demo-file demo.h264
 ```
 
 Open the UI and press **Start demo stream** on the home screen (or
@@ -272,7 +301,7 @@ console present; stats update live.
 - **Codec** is under **Settings → Stream**. H.264 is the compatible default.
   H.265/HEVC can roughly halve bandwidth at similar quality on a PS5 when the
   browser has hardware HEVC in WebRTC; HDR additionally needs Main10 decode and
-  an HDR display. Setu feature-detects HEVC and leaves the options disabled when the
+  an HDR display. GameBridge feature-detects HEVC and leaves the options disabled when the
   browser does not advertise it. The server verifies that the browser's SDP
   answer actually accepted the offered codec before the stream starts.
 - **Sharpness** (0–100, default 35; **Settings → Picture**) runs a two-pass
@@ -317,7 +346,7 @@ console present; stats update live.
 - Console regist keys and keys are stored locally in `hosts.json`. Treat that
   file as a credential.
 - If you enter or auto-fill a PSN Account ID in the browser, it is saved in
-  that device's `localStorage` (`setu.psnAccountId`) so later registrations can
+  that device's `localStorage` (`gamebridge.psnAccountId`) so later registrations can
   reuse it. It is not written to `hosts.json`; the bridge receives it only in
   the registration request. Use **Forget** next to the field to remove it.
 - Streaming, registration, and discovery traffic goes only to the console
@@ -326,7 +355,7 @@ console present; stats update live.
   URL/code exchanges that one-time code with Sony's account service, and
   **Public Lookup** sends the entered PSN Online ID to `psn.flipscreen.games`
   (the third-party lookup used by chiaki-ng). The PSN password is never handled
-  by Setu. Use Public Lookup only if you are comfortable with that request and
+  by GameBridge. Use Public Lookup only if you are comfortable with that request and
   your PSN privacy setting allows public search. The **Get a code** link uses
   `/api/psn/login` to open Sony's sign-in page; the code is only used to fetch
   the Account ID and is not stored.
@@ -377,7 +406,7 @@ that exercises session → ctrl → Takion → encryption → launch spec → st
   instead of running a stream that never displays.
 - **Adaptive bitrate cannot retarget a live stream.** The launch spec fixes
   the console encoder's bitrate for the whole session, and the protocol has no
-  mid-session command to change it. Setu adapts the next session's starting
+  mid-session command to change it. GameBridge adapts the next session's starting
   bitrate from measured loss. It does not drop or re-encode frames to fake a
   lower live rate.
 - **PS5 support is protocol 1.0 only**, matching Chiaki v2.2.0. Newer console
@@ -404,7 +433,7 @@ that exercises session → ctrl → Takion → encryption → launch spec → st
 - The `/api/psn/*` account-ID helper endpoints use Sony's legacy Remote Play
   OAuth client and may stop working if Sony changes those endpoints, just like
   Chiaki's helper. **Get a code** and redirect-code exchange use them; the PSN
-  password is never sent to Setu.
+  password is never sent to GameBridge.
 - Video is forwarded as complete access units; a lost slice or a frame that
   fails FEC is dropped and the client requests a new IDR. Expect a short
   recovery hitch under heavy packet loss.

@@ -58,7 +58,7 @@ def render() -> str:
         "Generated from `Cargo.lock` by `python3 tools/gen_licenses.py`.",
         "Do not edit by hand; re-run the script after changing dependencies.",
         "",
-        "Setu itself is AGPL-3.0-only. The dependency licenses below are",
+        "GameBridge itself is AGPL-3.0-only. The dependency licenses below are",
         "compatible with that license; this file is an inventory, not legal advice.",
         "",
     ]

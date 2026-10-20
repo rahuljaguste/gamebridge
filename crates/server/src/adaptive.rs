@@ -3,7 +3,7 @@
 //!
 //! The launch spec fixes the console encoder's bitrate for the whole session;
 //! neither Chiaki's protocol nor the console exposes a mid-session retarget
-//! command. Setu therefore adapts the *next* session's starting bitrate from
+//! command. GameBridge therefore adapts the *next* session's starting bitrate from
 //! the packet loss measured during this one.
 
 use std::time::{Duration, Instant};

@@ -57,8 +57,28 @@ function formatMbps(kbps) {
   return `${value.toFixed(value % 1 ? 1 : 0)} Mbps`;
 }
 
-const VOLUME_KEY = "setu.volume";
-const MUTE_KEY = "setu.muted";
+// Preserve settings saved under the previous product name on first load.
+(function migrateLegacyStorage() {
+  const legacyPrefix = "setu.";
+  const prefix = "gamebridge.";
+  try {
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(legacyPrefix)) keys.push(key);
+    }
+    for (const key of keys) {
+      const target = prefix + key.slice(legacyPrefix.length);
+      if (localStorage.getItem(target) === null) {
+        const value = localStorage.getItem(key);
+        if (value !== null) localStorage.setItem(target, value);
+      }
+    }
+  } catch {}
+})();
+
+const VOLUME_KEY = "gamebridge.volume";
+const MUTE_KEY = "gamebridge.muted";
 const volumeSlider = $("volume-slider");
 const muteBtn = $("mute-btn");
 const audio = { volume: 1, muted: false, lastVolume: 1 };
@@ -72,7 +92,7 @@ function saveAudioState() {
 
 function applyAudioState() {
   video.volume = audio.volume;
-  video.muted = audio.muted;
+  video.muted = audio.muted || state.paused;
   volumeSlider.value = String(Math.round(audio.volume * 100));
   const silent = audio.muted || audio.volume === 0;
   muteBtn.classList.toggle("muted", silent);
@@ -100,22 +120,6 @@ function toggleMute() {
   saveAudioState();
 }
 
-(function initAudio() {
-  try {
-    const storedVolume = parseFloat(localStorage.getItem(VOLUME_KEY) ?? "");
-    if (Number.isFinite(storedVolume)) {
-      audio.volume = Math.max(0, Math.min(1, storedVolume));
-    }
-    audio.muted = localStorage.getItem(MUTE_KEY) === "1";
-  } catch {}
-  audio.lastVolume = audio.volume > 0 ? audio.volume : 1;
-  applyAudioState();
-  volumeSlider.addEventListener("input", () => {
-    setVolume(parseInt(volumeSlider.value, 10) / 100);
-  });
-  volumeSlider.addEventListener("change", saveAudioState);
-  muteBtn.addEventListener("click", toggleMute);
-})();
 const hostsEl = $("hosts");
 const discoveredEl = $("discovered");
 const pinModal = $("pin-modal");
@@ -165,6 +169,23 @@ const state = {
   triggerEffectTimer: null,
   triggerEffect: { left: 0, right: 0 },
 };
+
+(function initAudio() {
+  try {
+    const storedVolume = parseFloat(localStorage.getItem(VOLUME_KEY) ?? "");
+    if (Number.isFinite(storedVolume)) {
+      audio.volume = Math.max(0, Math.min(1, storedVolume));
+    }
+    audio.muted = localStorage.getItem(MUTE_KEY) === "1";
+  } catch {}
+  audio.lastVolume = audio.volume > 0 ? audio.volume : 1;
+  applyAudioState();
+  volumeSlider.addEventListener("input", () => {
+    setVolume(parseInt(volumeSlider.value, 10) / 100);
+  });
+  volumeSlider.addEventListener("change", saveAudioState);
+  muteBtn.addEventListener("click", toggleMute);
+})();
 
 // Console PINs are masked by default, with an explicit local reveal toggle.
 function setupPinReveal(inputId, buttonId) {
@@ -942,11 +963,11 @@ function stopSharpening() {
 
 function persistPicture() {
   try {
-    localStorage.setItem("setu.sharpness", String(sharpnessAmount()));
-    localStorage.setItem("setu.brightness", String(colorAmount(brightnessInput)));
-    localStorage.setItem("setu.contrast", String(colorAmount(contrastInput)));
-    localStorage.setItem("setu.saturation", String(colorAmount(saturationInput)));
-    localStorage.setItem("setu.temporal", String(temporalAmount()));
+    localStorage.setItem("gamebridge.sharpness", String(sharpnessAmount()));
+    localStorage.setItem("gamebridge.brightness", String(colorAmount(brightnessInput)));
+    localStorage.setItem("gamebridge.contrast", String(colorAmount(contrastInput)));
+    localStorage.setItem("gamebridge.saturation", String(colorAmount(saturationInput)));
+    localStorage.setItem("gamebridge.temporal", String(temporalAmount()));
   } catch {}
 }
 
@@ -991,11 +1012,11 @@ pictureReset.addEventListener("click", () => {
     value = Math.min(max, Math.max(min, value));
     input.value = String(value);
   };
-  load(sharpnessInput, "setu.sharpness", PICTURE_DEFAULTS.sharpness);
-  load(brightnessInput, "setu.brightness", PICTURE_DEFAULTS.brightness);
-  load(contrastInput, "setu.contrast", PICTURE_DEFAULTS.contrast);
-  load(saturationInput, "setu.saturation", PICTURE_DEFAULTS.saturation);
-  load(temporalInput, "setu.temporal", PICTURE_DEFAULTS.temporal);
+  load(sharpnessInput, "gamebridge.sharpness", PICTURE_DEFAULTS.sharpness);
+  load(brightnessInput, "gamebridge.brightness", PICTURE_DEFAULTS.brightness);
+  load(contrastInput, "gamebridge.contrast", PICTURE_DEFAULTS.contrast);
+  load(saturationInput, "gamebridge.saturation", PICTURE_DEFAULTS.saturation);
+  load(temporalInput, "gamebridge.temporal", PICTURE_DEFAULTS.temporal);
   applyPicture();
 })();
 
@@ -1592,8 +1613,8 @@ for (const radio of targetRadios()) {
   });
 }
 
-const PSN_ACCOUNT_KEY = "setu.psnAccountId";
-const PSN_LEGACY_SIGNIN_KEY = "setu.psnSignInId";
+const PSN_ACCOUNT_KEY = "gamebridge.psnAccountId";
+const PSN_LEGACY_SIGNIN_KEY = "gamebridge.psnSignInId";
 
 function readSaved(key) {
   try { return localStorage.getItem(key) || ""; } catch { return ""; }
@@ -1721,7 +1742,7 @@ $("psn-login-link").addEventListener("click", (event) => {
   const url = $("psn-login-link").href;
   if (!url || url.endsWith("#")) return;
   event.preventDefault();
-  const popup = window.open(url, "setu-psn-login", "popup=yes,width=520,height=760");
+  const popup = window.open(url, "gamebridge-psn-login", "popup=yes,width=520,height=760");
   if (!popup) {
     const fallback = window.open(url, "_blank");
     if (!fallback) {
@@ -1925,7 +1946,7 @@ async function startSession(host) {
   const epoch = ++state.startEpoch;
   closeAddConsole({ notify: false });
   showPlayer();
-  showOverlay("Connecting…", "Requesting a session. If the console is asleep, Setu wakes it first.");
+  showOverlay("Connecting…", "Requesting a session. If the console is asleep, GameBridge wakes it first.");
   showPlayerBar(false);
   setStatus("Starting", "");
   try {
@@ -2487,7 +2508,7 @@ async function cleanupSession(resetUi) {
 
 /* ── Input ─────────────────────────────────────────────────────────────── */
 
-const KEYBOARD_PROFILES_KEY = "setu.keyboardProfiles";
+const KEYBOARD_PROFILES_KEY = "gamebridge.keyboardProfiles";
 
 // Every remappable action. `bit` actions are buttons, `trigger` actions feed
 // an analog trigger, and `axis` actions drive the left stick.
@@ -2982,7 +3003,7 @@ function captureScreenshot() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `setu-${new Date().toISOString().replace(/[:.]/g, "-")}.png`;
+    link.download = `gamebridge-${new Date().toISOString().replace(/[:.]/g, "-")}.png`;
     document.body.append(link);
     link.click();
     link.remove();
@@ -2993,19 +3014,22 @@ function captureScreenshot() {
 
 function setPaused(paused) {
   if (paused) {
-    video.pause();
     state.paused = true;
+    // Keep the media element playing behind the overlay. Pausing it can stop
+    // the browser from draining WebRTC, which backs up the server's video
+    // queue and produces IDR churn. Mute and cover the view instead.
+    applyAudioState();
     $("pause-btn").textContent = "Resume";
     setStatus("Paused", "");
     showOverlay("Paused", "The console keeps running. Press Resume to return to live video.");
     return;
   }
-  video.play().then(() => {
-    state.paused = false;
-    $("pause-btn").textContent = "Pause";
-    hideOverlay();
-    setStatus(state.streaming ? "Live" : "Connected", state.streaming ? "live" : "");
-  }).catch(() => {
+  state.paused = false;
+  applyAudioState();
+  $("pause-btn").textContent = "Pause";
+  hideOverlay();
+  setStatus(state.streaming ? "Live" : "Connected", state.streaming ? "live" : "");
+  video.play().catch(() => {
     toast("Click the video to resume playback", true);
   });
 }
@@ -3274,11 +3298,11 @@ $("kb-profile-reset").addEventListener("click", () => {
 renderKeyboardBindings();
 
 const STREAM_OPTION_STORAGE = {
-  resolution: "setu.streamResolution",
-  fps: "setu.streamFps",
-  bitrate: "setu.streamBitrate",
-  codec: "setu.streamCodec",
-  adaptive: "setu.streamAdaptive",
+  resolution: "gamebridge.streamResolution",
+  fps: "gamebridge.streamFps",
+  bitrate: "gamebridge.streamBitrate",
+  codec: "gamebridge.streamCodec",
+  adaptive: "gamebridge.streamAdaptive",
 };
 
 function hevcCapabilities() {
@@ -3332,7 +3356,7 @@ function saveStreamOptions() {
   } catch {}
 }
 
-const AUDIO_OUTPUT_KEY = "setu.audioOutput";
+const AUDIO_OUTPUT_KEY = "gamebridge.audioOutput";
 
 function audioOutputSupported() {
   return typeof video.setSinkId === "function";

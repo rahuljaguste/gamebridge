@@ -225,15 +225,15 @@ pub async fn create_peer(
     // and close it on any error; otherwise its UDP sockets remain bound on
     // every advertised interface.
     let handle_result: Result<PeerHandles> = async {
-        let stream_id = "setu-stream".to_string();
+        let stream_id = "gamebridge-stream".to_string();
         let video_ssrc = rand::random::<u32>();
         let video_track = Arc::new(
             TrackLocalStaticSample::new(
                 Instant::now(),
                 MediaStreamTrack::new(
                     stream_id.clone(),
-                    "setu-video".to_string(),
-                    "Setu Video".to_string(),
+                    "gamebridge-video".to_string(),
+                    "GameBridge Video".to_string(),
                     RtpCodecKind::Video,
                     vec![RTCRtpEncodingParameters {
                         rtp_coding_parameters: RTCRtpCodingParameters {
@@ -258,8 +258,8 @@ pub async fn create_peer(
                 Instant::now(),
                 MediaStreamTrack::new(
                     stream_id,
-                    "setu-audio".to_string(),
-                    "Setu Audio".to_string(),
+                    "gamebridge-audio".to_string(),
+                    "GameBridge Audio".to_string(),
                     RtpCodecKind::Audio,
                     vec![RTCRtpEncodingParameters {
                         rtp_coding_parameters: RTCRtpCodingParameters {

@@ -73,7 +73,7 @@ pub fn extract_code(input: &str) -> Result<String> {
 
 fn client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
-        .user_agent(concat!("setu/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("gamebridge/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(20))
         .build()
         .context("could not create the HTTP client")

@@ -235,7 +235,7 @@ mod tests {
     use crate::config::ConfigStore;
 
     fn test_state() -> Arc<AppState> {
-        let dir = std::env::temp_dir().join(format!("setu-test-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("gamebridge-test-{}", Uuid::new_v4()));
         let store = ConfigStore::load(Some(dir)).expect("load empty config");
         AppState::new(store, None)
     }

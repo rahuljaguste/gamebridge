@@ -410,7 +410,7 @@ dependencies = [
 
 [[package]]
 name = "chiaki-core"
-version = "0.5.7"
+version = "0.6.0"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -793,6 +793,38 @@ dependencies = [
  "memchr",
  "pin-project-lite",
  "slab",
+]
+
+[[package]]
+name = "gamebridge-server"
+version = "0.6.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "bytes",
+ "chiaki-core",
+ "clap",
+ "dirs",
+ "futures-util",
+ "hex",
+ "if-addrs",
+ "rand 0.8.8",
+ "reqwest",
+ "rtc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "webrtc",
 ]
 
 [[package]]
@@ -2242,38 +2274,6 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
-]
-
-[[package]]
-name = "setu-server"
-version = "0.5.7"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "bytes",
- "chiaki-core",
- "clap",
- "dirs",
- "futures-util",
- "hex",
- "if-addrs",
- "rand 0.8.8",
- "reqwest",
- "rtc",
- "serde",
- "serde_json",
- "sha2",
- "subtle",
- "tempfile",
- "tokio",
- "tokio-util",
- "tower",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
- "webrtc",
 ]
 
 [[package]]

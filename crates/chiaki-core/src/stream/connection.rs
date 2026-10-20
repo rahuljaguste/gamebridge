@@ -167,7 +167,10 @@ async fn run_inner(
             &sig,
         );
         let big_len = big.len();
-        if std::env::var_os("SETU_DUMP_STREAM").is_some() {
+        let dump_stream = std::env::var_os("GAMEBRIDGE_DUMP_STREAM")
+            .or_else(|| std::env::var_os("SETU_DUMP_STREAM"))
+            .is_some();
+        if dump_stream {
             fn hex(bytes: &[u8]) -> String {
                 bytes.iter().map(|b| format!("{b:02x}")).collect()
             }

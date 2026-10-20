@@ -1,5 +1,5 @@
 [package]
-name = "setu-server"
+name = "gamebridge-server"
 description = "Unofficial browser bridge for PlayStation Remote Play"
 version.workspace = true
 edition.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 publish = false
 
 [[bin]]
-name = "setu"
+name = "gamebridge"
 path = "src/main.rs"
 
 [dependencies]

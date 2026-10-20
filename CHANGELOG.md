@@ -1,7 +1,60 @@
 # Changelog
 
-All notable changes to Setu are documented here. The project follows semantic
-versioning; it is a Chiaki derivative and remains AGPL-3.0-only.
+All notable changes to GameBridge are documented here. The project follows
+semantic versioning; it is a Chiaki derivative and remains AGPL-3.0-only.
+
+## [0.6.0] - 2026-10-20
+
+### Changed
+
+- Renamed the project, binary, server crate, configuration directory, browser
+  storage keys, auth cookie, UI, WebRTC track names, user agent, and release
+  artifacts from Setu to GameBridge. The GitHub repository has been renamed to
+  `gamebridge`; the old URL redirects.
+- Existing `setu` registrations are copied into the new `gamebridge`
+  configuration directory on first run, with `ps-remoteplay` as a fallback.
+  `SETU_CONFIG_DIR` and `SETU_DUMP_STREAM` remain accepted as legacy aliases.
+- Browser settings saved under `setu.*` are copied to `gamebridge.*` on first
+  load, so volume, bindings, stream settings, and the PSN account ID survive
+  the rename.
+- GitHub releases now publish `gamebridge-<version>-source.tar.gz` containing
+  the exact Corresponding Source for the binaries, alongside `COPYING` and the
+  third-party notices.
+- README now documents the multi-platform direction: PlayStation today, with
+  Xbox, Steam/PC, and Nintendo under evaluation.
+
+## [0.5.11] - 2026-10-20
+
+### Fixed
+
+- Gyro, accelerometer, and compressed orientation in feedback state are encoded
+  little-endian like the console expects; they had been big-endian while the
+  sticks were correctly big-endian. An idle controller therefore read as about
+  +30 rad/s on every gyro axis and ~5 g on two accelerometer axes, so motion
+  input could not work. A byte-exact test now pins the reference layout.
+
+## [0.5.10] - 2026-10-20
+
+### Fixed
+
+- Audio controls no longer initialize before the shared `state` object,
+  which caused `Cannot access 'state' before initialization` on page load.
+
+## [0.5.9] - 2026-10-20
+
+### Changed
+
+- The Setu brand mark and favicon now use a gamepad silhouette with a
+  D-pad and face buttons, while keeping the existing blue gradient tile.
+
+## [0.5.8] - 2026-10-20
+
+### Fixed
+
+- Pause no longer calls `HTMLMediaElement.pause()`. It mutes the stream and
+  covers the view while the element keeps draining WebRTC, preventing browser
+  backpressure from filling the server's video queue and triggering avoidable
+  frame-gap/IDR churn. Resume restores the saved mute state.
 
 ## [0.5.7] - 2026-10-20
 
