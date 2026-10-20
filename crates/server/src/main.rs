@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Setu — an unofficial browser bridge for PlayStation Remote Play.
 
+mod adaptive;
 mod config;
 mod demo;
 mod manager;

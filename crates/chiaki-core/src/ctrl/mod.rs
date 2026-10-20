@@ -196,8 +196,14 @@ pub async fn connect(
             info.video = info.video.downgrade_to_720p();
         }
         if (server_type == 0 || server_type == 1) && info.video.codec != Codec::H264 {
-            tracing::info!("server does not support HEVC; falling back to H.264");
-            info.video.codec = Codec::H264;
+            if info.allow_codec_fallback {
+                tracing::info!("server does not support HEVC; falling back to H.264");
+                info.video.codec = Codec::H264;
+            } else {
+                return Err(Error::Protocol(
+                    "console reports no HEVC support; choose H.264".into(),
+                ));
+            }
         }
     } else {
         tracing::warn!("no valid RP-Server-Type in ctrl response");

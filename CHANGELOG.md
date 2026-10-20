@@ -3,6 +3,56 @@
 All notable changes to Setu are documented here. The project follows semantic
 versioning; it is a Chiaki derivative and remains AGPL-3.0-only.
 
+## [0.5.1] - 2026-10-19
+
+### Changed
+
+- Takion UDP sockets request 4 MiB send/receive buffers (best-effort; the OS
+  may cap them) and the receive loop drains up to 64 queued datagrams per
+  wake-up instead of one, so a burst no longer overflows the kernel queue while
+  a packet is being assembled.
+- A run of lost control acknowledgements no longer ends the session. Stuck
+  control packets are dropped after 25 retransmissions, while a separate
+  inbound-silence watchdog fails the session only after 15 seconds with no
+  packets from the console at all. Media can continue through a short ACK-loss
+  burst that previously killed a live stream after roughly five seconds.
+- Adaptive bitrate now also reacts to a single one-second loss burst at or
+  above 5%, not only to the session average. Stepping back up requires both a
+  low average and no burst.
+
+## [0.5.0] - 2026-10-19
+
+### Added
+
+- **Configurable keyboard bindings and profiles.** Every button, trigger, and
+  left-stick direction can be rebound in **Settings → Input**, cleared, or
+  reset. A key can drive only one action; moving it releases the previous
+  owner. Profiles are named, duplicated with **New**, deleted, and saved in
+  browser storage.
+- **H.265/HEVC delivery.** PS5 sessions can negotiate Main profile H.265 or
+  Main10 HDR. The Stream settings offer the codec only when the browser
+  advertises hardware HEVC over WebRTC, the server offers a single video codec
+  per peer, and the SDP answer is checked for that codec before the stream
+  starts. PS4 remains H.264-only.
+- **Adaptive bitrate across sessions.** Packet loss is measured after a
+  warm-up, reported live in the player stats, and persisted per console. A
+  session at or above 1.5% loss lowers the next session's starting bitrate one
+  ladder step; two sessions at or below 0.3% raise it. The launch spec fixes
+  the rate for one session, so changes apply on the next connection.
+- Keyboard and stream settings (resolution, FPS, bitrate, codec, adaptive
+  toggle) are remembered in the browser.
+
+### Changed
+
+- The WebSocket input path resolves the current session's channels per
+  message, so a replaced session can never leave it sending into a closed
+  channel.
+
+### Documentation
+
+- README and UI explain browser/console HEVC requirements, HDR's Main10 and
+  HDR-display requirement, and the between-sessions limit of adaptive bitrate.
+
 ## [0.4.4] - 2026-10-19
 
 ### Added

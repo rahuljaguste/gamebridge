@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Create the server-side peer connection, H.264/Opus tracks and offer.
+//! Create the server-side peer connection, video/Opus tracks and offer.
 
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -11,7 +11,7 @@ use rtc::media_stream::MediaStreamTrack;
 use rtc::peer_connection::configuration::RTCConfigurationBuilder;
 use rtc::peer_connection::configuration::interceptor_registry::register_default_interceptors;
 use rtc::peer_connection::configuration::media_engine::{
-    MIME_TYPE_H264, MIME_TYPE_OPUS, MediaEngine,
+    MIME_TYPE_H264, MIME_TYPE_HEVC, MIME_TYPE_OPUS, MediaEngine,
 };
 use rtc::rtp_transceiver::rtp_sender::{
     RTCRtpCodec, RTCRtpCodecParameters, RTCRtpCodingParameters, RTCRtpEncodingParameters,
@@ -27,11 +27,18 @@ use webrtc::peer_connection::{
 use webrtc::rtp_transceiver::RtpSender;
 use webrtc::runtime::{Runtime, default_runtime};
 
+use chiaki_core::target::Codec;
+
 use crate::state::ServerEvent;
 
 pub const H264_PAYLOAD_TYPE: u8 = 102;
+pub const H265_PAYLOAD_TYPE: u8 = 103;
 pub const OPUS_PAYLOAD_TYPE: u8 = 111;
 const H264_FMTP: &str = "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f";
+/// Main profile; the console's HEVC stream is sent in a single RTP stream.
+const H265_FMTP: &str = "profile-id=1;tier-flag=0;level-asymmetry-allowed=1;tx-mode=SRS";
+/// Main10 profile for HDR.
+const H265_HDR_FMTP: &str = "profile-id=2;tier-flag=0;level-asymmetry-allowed=1;tx-mode=SRS";
 const OPUS_FMTP: &str = "minptime=10;useinbandfec=1";
 
 fn runtime() -> Result<Arc<dyn Runtime>> {
@@ -144,19 +151,30 @@ async fn payload_type(sender: &Arc<dyn RtpSender>, fallback: u8) -> u8 {
     }
 }
 
-/// Build the peer, add tracks, and create a non-trickle offer.
-pub async fn create_peer(events: broadcast::Sender<ServerEvent>) -> Result<PeerHandles> {
+/// Build the peer, add tracks, and create a non-trickle offer. Only the
+/// selected video codec is advertised, so the browser's answer either accepts
+/// it or the caller can fail the start instead of forwarding an undecodable
+/// track.
+pub async fn create_peer(
+    events: broadcast::Sender<ServerEvent>,
+    codec: Codec,
+) -> Result<PeerHandles> {
     let mut media_engine = MediaEngine::default();
+    let (mime_type, video_payload_type, fmtp) = match codec {
+        Codec::H264 => (MIME_TYPE_H264, H264_PAYLOAD_TYPE, H264_FMTP),
+        Codec::H265 => (MIME_TYPE_HEVC, H265_PAYLOAD_TYPE, H265_FMTP),
+        Codec::H265Hdr => (MIME_TYPE_HEVC, H265_PAYLOAD_TYPE, H265_HDR_FMTP),
+    };
 
     let video_codec = RTCRtpCodecParameters {
         rtp_codec: RTCRtpCodec {
-            mime_type: MIME_TYPE_H264.to_string(),
+            mime_type: mime_type.to_string(),
             clock_rate: 90000,
             channels: 0,
-            sdp_fmtp_line: H264_FMTP.to_string(),
+            sdp_fmtp_line: fmtp.to_string(),
             rtcp_feedback: vec![],
         },
-        payload_type: H264_PAYLOAD_TYPE,
+        payload_type: video_payload_type,
     };
     let audio_codec = RTCRtpCodecParameters {
         rtp_codec: RTCRtpCodec {
@@ -170,7 +188,7 @@ pub async fn create_peer(events: broadcast::Sender<ServerEvent>) -> Result<PeerH
     };
     media_engine
         .register_codec(video_codec.clone(), RtpCodecKind::Video)
-        .context("register H.264 codec")?;
+        .with_context(|| format!("register {:?} codec", codec))?;
     media_engine
         .register_codec(audio_codec.clone(), RtpCodecKind::Audio)
         .context("register Opus codec")?;
@@ -258,7 +276,7 @@ pub async fn create_peer(events: broadcast::Sender<ServerEvent>) -> Result<PeerH
             .await
             .context("add audio track")?;
 
-        let video_pt = payload_type(&video_sender, H264_PAYLOAD_TYPE).await;
+        let video_pt = payload_type(&video_sender, video_payload_type).await;
         let audio_pt = payload_type(&audio_sender, OPUS_PAYLOAD_TYPE).await;
 
         let offer = peer.create_offer(None).await.context("create offer")?;
@@ -293,4 +311,27 @@ pub async fn create_peer(events: broadcast::Sender<ServerEvent>) -> Result<PeerH
         let _ = peer.close().await;
     }
     handle_result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn h265_offer_advertises_hevc() {
+        let (events, _) = broadcast::channel(1);
+        let peers = create_peer(events, Codec::H265).await.expect("H.265 peer");
+        assert!(peers.offer_sdp.contains("H265/90000"));
+        assert!(peers.offer_sdp.contains("profile-id=1"));
+        assert!(!peers.offer_sdp.contains("H264/90000"));
+        let _ = peers.peer.close().await;
+
+        let (events, _) = broadcast::channel(1);
+        let peers = create_peer(events, Codec::H265Hdr)
+            .await
+            .expect("H.265 HDR peer");
+        assert!(peers.offer_sdp.contains("H265/90000"));
+        assert!(peers.offer_sdp.contains("profile-id=2"));
+        let _ = peers.peer.close().await;
+    }
 }

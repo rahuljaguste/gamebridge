@@ -23,6 +23,7 @@ use chiaki_core::target::{Codec, Fps, Resolution, VideoProfile};
 use rtc::peer_connection::configuration::RTCOfferOptions;
 use rtc::peer_connection::sdp::RTCSessionDescription;
 
+use crate::adaptive::{self, AdaptiveContext};
 use crate::config::{StoredHost, parse_target, target_string};
 use crate::manager;
 use crate::psn;
@@ -304,12 +305,18 @@ pub struct StartRequest {
     pub fps: u32,
     #[serde(default)]
     pub bitrate_kbps: Option<u32>,
-    /// "h264" (default), "h265" or "h265-hdr". H.265 is a diagnostic for
-    /// PS5 consoles whose firmware rejects AVC launch specs.
+    /// "h264" (default), "h265" or "h265-hdr".
     #[serde(default)]
     pub codec: Option<String>,
+    /// Step the *next* session's starting bitrate down after a lossy session.
+    #[serde(default = "default_true")]
+    pub adaptive_bitrate: bool,
     #[serde(default)]
     pub enable_dualsense: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_resolution() -> String {
@@ -330,6 +337,13 @@ pub struct RtcDescription {
 pub struct StartResponse {
     pub session_id: String,
     pub offer: RtcDescription,
+    /// Bitrate the console is being asked to encode at.
+    pub bitrate_kbps: u32,
+    /// Whether adaptive bitrate is enabled for this session.
+    pub adaptive: bool,
+    /// True when a previous lossy session lowered this start below the
+    /// configured base bitrate.
+    pub adaptive_stepped_down: bool,
 }
 
 pub async fn start_session(
@@ -393,22 +407,39 @@ pub async fn start_session(
         };
     }
 
-    // The browser can only render H.264 today. Rejecting other codecs here is
-    // better than negotiating HEVC in the core and then never forwarding a
-    // frame to the H.264 WebRTC track.
-    if video.codec != Codec::H264 {
-        return Err(ApiError::bad_request(
-            "H.265 is not supported by the browser bridge yet; use H.264",
-        ));
+    // The PS4 launch spec and ctrl request have no HEVC fields. Only PS5
+    // sessions can negotiate it.
+    if video.codec != Codec::H264 && !target.is_ps5() {
+        return Err(ApiError::bad_request("H.265 requires a PS5 console"));
+    }
+
+    // The launch spec fixes the encoder bitrate for the whole session. Adapt
+    // the next session's starting point from the previous session's loss.
+    let base_bitrate = video.bitrate_kbps;
+    let mut adaptive_ctx = None;
+    let mut adaptive_stepped_down = false;
+    if request.adaptive_bitrate {
+        let (adaptive_state, stepped) =
+            adaptive::resolve(&state.config, &request.host_id, base_bitrate);
+        video.bitrate_kbps = adaptive_state.current_kbps;
+        adaptive_stepped_down = stepped;
+        adaptive_ctx = Some(AdaptiveContext {
+            host_id: request.host_id.clone(),
+            state: adaptive_state,
+        });
     }
 
     let mut info = ConnectInfo::new(target, host.host.clone(), regist_key, morning, video);
     info.enable_dualsense = request.enable_dualsense;
+    // The peer was built for one video codec. If the console rejects HEVC,
+    // fail with a clear error instead of silently sending H.264 on an H.265
+    // track.
+    info.allow_codec_fallback = video.codec == Codec::H264;
 
     // Build the peer before opening a console session. If any WebRTC setup
     // step fails, no console session exists yet, so there is nothing to leak
     // or to stop gracefully.
-    let peers = webrtc::create_peer(state.events.clone())
+    let peers = webrtc::create_peer(state.events.clone(), video.codec)
         .await
         .map_err(|e| ApiError::internal(format!("WebRTC setup failed: {e:#}")))?;
     let offer_sdp = peers.offer_sdp.clone();
@@ -430,6 +461,7 @@ pub async fn start_session(
     let active = ActiveSession {
         id,
         host_id: request.host_id.clone(),
+        codec: video.codec,
         input: session.input.clone(),
         commands: session.commands.clone(),
         peer: peers.peer.clone(),
@@ -472,6 +504,7 @@ pub async fn start_session(
             shared,
             bridge_cancel,
             frame_duration,
+            adaptive_ctx,
             stop_rx,
         ))
         .catch_unwind()
@@ -505,6 +538,9 @@ pub async fn start_session(
             kind: "offer".to_string(),
             sdp: offer_sdp,
         },
+        bitrate_kbps: video.bitrate_kbps,
+        adaptive: request.adaptive_bitrate,
+        adaptive_stepped_down,
     }))
 }
 
@@ -553,10 +589,12 @@ pub async fn answer(
     State(state): State<Arc<AppState>>,
     Json(request): Json<AnswerRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let peer = {
+    let (peer, codec) = {
         let active = state.active.lock().await;
         match active.as_ref() {
-            Some(session) if session.id.to_string() == request.session_id => session.peer.clone(),
+            Some(session) if session.id.to_string() == request.session_id => {
+                (session.peer.clone(), session.codec)
+            }
             Some(_) => {
                 return Err(ApiError::conflict(
                     "answer does not match the active session",
@@ -571,6 +609,15 @@ pub async fn answer(
             }
         }
     };
+    // The peer advertises exactly one video codec. An answer without it means
+    // the browser cannot decode this stream; fail before the console session
+    // runs with a track that will never display.
+    if !sdp_accepts_codec(&request.sdp, codec) {
+        let name = if codec.is_h265() { "H.265" } else { "H.264" };
+        return Err(ApiError::bad_request(format!(
+            "this browser did not accept {name}; choose H.264 in Settings → Stream"
+        )));
+    }
     let answer = RTCSessionDescription::answer(request.sdp)
         .map_err(|e| ApiError::bad_request(format!("invalid answer SDP: {e}")))?;
     peer.set_remote_description(answer)
@@ -652,6 +699,44 @@ pub struct StatusResponse {
     pub last_error: Option<String>,
 }
 
+/// Check that the answer accepted the offered codec on a live video m-line.
+/// A rejected m-line (port 0) can still carry rtpmap attributes, so scanning
+/// the whole SDP for the codec name is not sufficient.
+fn sdp_accepts_codec(sdp: &str, codec: Codec) -> bool {
+    let encoding = if codec.is_h265() {
+        "H265/90000"
+    } else {
+        "H264/90000"
+    };
+    let mut video_active = false;
+    for line in sdp.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("m=") {
+            video_active = rest.starts_with("video ")
+                && rest
+                    .split_whitespace()
+                    .nth(1)
+                    .and_then(|port| port.parse::<u16>().ok())
+                    .is_some_and(|port| port != 0);
+            continue;
+        }
+        if !video_active {
+            continue;
+        }
+        let Some(rest) = line.strip_prefix("a=rtpmap:") else {
+            continue;
+        };
+        if rest
+            .split_whitespace()
+            .nth(1)
+            .is_some_and(|name| name.eq_ignore_ascii_case(encoding))
+        {
+            return true;
+        }
+    }
+    false
+}
+
 pub async fn status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
     let (active, session_id, host_id, uptime_seconds, peer_connected) = {
         let slot = state.active.lock().await;
@@ -682,4 +767,35 @@ pub async fn status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> 
         demo: state.demo_file.is_some(),
         last_error,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sdp_accepts_codec;
+    use chiaki_core::target::Codec;
+
+    const H264_ANSWER: &str =
+        "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 102\r\na=rtpmap:102 H264/90000\r\n";
+    const H265_ANSWER: &str =
+        "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 103\r\na=rtpmap:103 H265/90000\r\n";
+    const AUDIO_ONLY: &str = "v=0\r\nm=video 0 UDP/TLS/RTP/SAVPF 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\n";
+    const REJECTED_VIDEO_WITH_RTPMAP: &str =
+        "v=0\r\nm=video 0 UDP/TLS/RTP/SAVPF 103\r\na=rtpmap:103 H265/90000\r\n";
+    const AUDIO_FIRST: &str = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\nm=video 9 UDP/TLS/RTP/SAVPF 102\r\na=rtpmap:102 H264/90000\r\n";
+
+    #[test]
+    fn answer_must_accept_the_offered_codec() {
+        assert!(sdp_accepts_codec(H264_ANSWER, Codec::H264));
+        assert!(!sdp_accepts_codec(H264_ANSWER, Codec::H265));
+        assert!(!sdp_accepts_codec(H264_ANSWER, Codec::H265Hdr));
+        assert!(sdp_accepts_codec(H265_ANSWER, Codec::H265));
+        assert!(sdp_accepts_codec(H265_ANSWER, Codec::H265Hdr));
+        assert!(!sdp_accepts_codec(H265_ANSWER, Codec::H264));
+        assert!(!sdp_accepts_codec(AUDIO_ONLY, Codec::H264));
+        assert!(!sdp_accepts_codec(AUDIO_ONLY, Codec::H265));
+        // Port 0 means the browser rejected the video m-line even if its
+        // rtpmap attributes are still present.
+        assert!(!sdp_accepts_codec(REJECTED_VIDEO_WITH_RTPMAP, Codec::H265));
+        assert!(sdp_accepts_codec(AUDIO_FIRST, Codec::H264));
+    }
 }

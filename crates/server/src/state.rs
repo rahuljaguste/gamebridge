@@ -14,6 +14,7 @@ use webrtc::peer_connection::PeerConnection;
 
 use chiaki_core::controller::ControllerState;
 use chiaki_core::session::SessionCommand;
+use chiaki_core::target::Codec;
 
 use crate::config::ConfigStore;
 
@@ -67,6 +68,11 @@ pub enum ServerEvent {
     Error {
         message: String,
     },
+    /// A non-fatal notice, such as the adaptive bitrate decision for the next
+    /// session.
+    Notice {
+        message: String,
+    },
     Quit {
         /// Identifies the session that ended. A browser that has already
         /// moved on to a newer session must ignore this event.
@@ -77,6 +83,8 @@ pub enum ServerEvent {
     Stats {
         received: u64,
         lost: u64,
+        /// Recent packet loss percentage after the startup warm-up.
+        loss_pct: Option<f64>,
         /// Round-trip time to the console in milliseconds, when measured.
         latency_ms: Option<f64>,
     },
@@ -91,6 +99,8 @@ pub enum ServerEvent {
 pub struct ActiveSession {
     pub id: Uuid,
     pub host_id: String,
+    /// Video codec the peer was built for; the answer must accept it.
+    pub codec: Codec,
     pub input: watch::Sender<ControllerState>,
     pub commands: mpsc::Sender<SessionCommand>,
     pub peer: Arc<dyn PeerConnection>,
@@ -268,6 +278,7 @@ mod tests {
         state.publish(ServerEvent::Stats {
             received: 1,
             lost: 0,
+            loss_pct: None,
             latency_ms: None,
         });
         let (_, replay) = state.subscribe_with_replay();

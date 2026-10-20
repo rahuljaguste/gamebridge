@@ -31,18 +31,30 @@ const statusPill = $("conn-status");
 const statsEl = $("stats");
 
 let consoleLatencyMs = null;
+let packetLossPct = null;
 let packetCount = { received: 0, lost: 0 };
 
 function renderStats() {
   const parts = [];
+  if (Number.isFinite(state.activeBitrate) && state.activeBitrate > 0) {
+    parts.push(`${(state.activeBitrate / 1000).toFixed(state.activeBitrate % 1000 ? 1 : 0)} Mbps`);
+  }
   if (Number.isFinite(consoleLatencyMs)) {
     const ms = consoleLatencyMs < 10
       ? consoleLatencyMs.toFixed(1)
       : Math.round(consoleLatencyMs);
     parts.push(`${ms} ms`);
   }
+  if (Number.isFinite(packetLossPct) && packetLossPct >= 0.05) {
+    parts.push(`${packetLossPct.toFixed(1)}% loss`);
+  }
   parts.push(`${packetCount.received} pkts`, `${packetCount.lost} lost`);
   statsEl.textContent = parts.join(" · ");
+}
+
+function formatMbps(kbps) {
+  const value = kbps / 1000;
+  return `${value.toFixed(value % 1 ? 1 : 0)} Mbps`;
 }
 const hostsEl = $("hosts");
 const discoveredEl = $("discovered");
@@ -68,6 +80,7 @@ const state = {
   wsRetry: null,
   wsRetryDelay: 500,
   stream: null,
+  activeBitrate: null,
   inputTimer: null,
   lastInputJson: "",
   lastInputAt: 0,
@@ -1153,6 +1166,7 @@ function openSettings(tab = "stream") {
 function closeSettings() {
   const overlay = $("settings-overlay");
   if (!overlay.classList.contains("open")) return;
+  cancelRebind(false);
   overlay.classList.remove("open");
   overlay.setAttribute("aria-hidden", "true");
   overlay.setAttribute("inert", "");
@@ -1784,6 +1798,8 @@ async function startSession(host) {
         resolution: $("opt-resolution").value,
         fps: parseInt($("opt-fps").value, 10),
         bitrate_kbps: Number.isFinite(bitrate) ? bitrate : null,
+        codec: $("opt-codec").value,
+        adaptive_bitrate: $("opt-adaptive").checked,
         enable_dualsense: $("opt-dualsense").checked,
       }),
     });
@@ -1795,6 +1811,13 @@ async function startSession(host) {
     }
     const sessionId = response.session_id;
     state.sessionId = sessionId;
+    state.activeBitrate = Number.isFinite(response.bitrate_kbps) && response.bitrate_kbps > 0
+      ? response.bitrate_kbps
+      : null;
+    renderStats();
+    if (response.adaptive_stepped_down) {
+      toast(`Adaptive bitrate: starting at ${formatMbps(response.bitrate_kbps)} after recent packet loss`);
+    }
     // Subscribe before ICE gathering so PIN/phase events are not missed.
     connectSocket();
     setBusy(true);
@@ -1830,6 +1853,8 @@ async function startDemo() {
     }
     const sessionId = response.session_id;
     state.sessionId = sessionId;
+    state.activeBitrate = null;
+    renderStats();
     connectSocket();
     setBusy(true);
     await setupPeer(response.offer, sessionId);
@@ -2102,8 +2127,12 @@ function handleServerEvent(event) {
       break;
     case "stats":
       packetCount = { received: event.received, lost: event.lost };
+      packetLossPct = Number.isFinite(event.loss_pct) ? event.loss_pct : null;
       consoleLatencyMs = Number.isFinite(event.latency_ms) ? event.latency_ms : null;
       renderStats();
+      break;
+    case "notice":
+      toast(event.message, false, 7000);
       break;
     case "remote_disconnect":
       toast(`Console disconnected: ${event.reason}`, true);
@@ -2239,7 +2268,9 @@ async function cleanupSession(resetUi) {
   }
   state.stream = null;
   consoleLatencyMs = null;
+  packetLossPct = null;
   packetCount = { received: 0, lost: 0 };
+  state.activeBitrate = null;
   stopSharpening();
   video.srcObject = null;
   setBusy(false);
@@ -2254,25 +2285,257 @@ async function cleanupSession(resetUi) {
 
 /* ── Input ─────────────────────────────────────────────────────────────── */
 
-const KEY_BUTTONS = {
-  Space: B.CROSS,
-  KeyJ: B.MOON,
-  KeyK: B.BOX,
-  KeyL: B.PYRAMID,
-  ArrowLeft: B.DPAD_LEFT,
-  ArrowRight: B.DPAD_RIGHT,
-  ArrowUp: B.DPAD_UP,
-  ArrowDown: B.DPAD_DOWN,
-  KeyQ: B.L1,
-  KeyE: B.R1,
-  KeyZ: 0,
-  KeyC: 0,
-  Tab: B.TOUCHPAD,
-  Enter: B.OPTIONS,
-  Backspace: B.SHARE,
-  KeyF: B.L3,
-  KeyG: B.R3,
+const KEYBOARD_PROFILES_KEY = "setu.keyboardProfiles";
+
+// Every remappable action. `bit` actions are buttons, `trigger` actions feed
+// an analog trigger, and `axis` actions drive the left stick.
+const KEYBOARD_ACTIONS = [
+  { id: "cross", label: "Cross", bit: B.CROSS, defaultCode: "Space" },
+  { id: "moon", label: "Moon", bit: B.MOON, defaultCode: "KeyJ" },
+  { id: "box", label: "Box", bit: B.BOX, defaultCode: "KeyK" },
+  { id: "pyramid", label: "Pyramid", bit: B.PYRAMID, defaultCode: "KeyL" },
+  { id: "dpad_left", label: "D-pad left", bit: B.DPAD_LEFT, defaultCode: "ArrowLeft" },
+  { id: "dpad_right", label: "D-pad right", bit: B.DPAD_RIGHT, defaultCode: "ArrowRight" },
+  { id: "dpad_up", label: "D-pad up", bit: B.DPAD_UP, defaultCode: "ArrowUp" },
+  { id: "dpad_down", label: "D-pad down", bit: B.DPAD_DOWN, defaultCode: "ArrowDown" },
+  { id: "l1", label: "L1", bit: B.L1, defaultCode: "KeyQ" },
+  { id: "r1", label: "R1", bit: B.R1, defaultCode: "KeyE" },
+  { id: "l3", label: "L3", bit: B.L3, defaultCode: "KeyF" },
+  { id: "r3", label: "R3", bit: B.R3, defaultCode: "KeyG" },
+  { id: "options", label: "Options", bit: B.OPTIONS, defaultCode: "Enter" },
+  { id: "share", label: "Share", bit: B.SHARE, defaultCode: "Backspace" },
+  { id: "touchpad", label: "Touchpad", bit: B.TOUCHPAD, defaultCode: "Tab" },
+  { id: "l2", label: "L2 trigger", trigger: "l2", defaultCode: "KeyZ" },
+  { id: "r2", label: "R2 trigger", trigger: "r2", defaultCode: "KeyC" },
+  { id: "stick_left", label: "Left stick left", axis: "lx", value: -32767, defaultCode: "KeyA" },
+  { id: "stick_right", label: "Left stick right", axis: "lx", value: 32767, defaultCode: "KeyD" },
+  { id: "stick_up", label: "Left stick up", axis: "ly", value: -32767, defaultCode: "KeyW" },
+  { id: "stick_down", label: "Left stick down", axis: "ly", value: 32767, defaultCode: "KeyS" },
+];
+
+const KEY_LABELS = {
+  Space: "Space",
+  Tab: "Tab",
+  Enter: "Enter",
+  Backspace: "Backspace",
+  Delete: "Delete",
+  Insert: "Insert",
+  Home: "Home",
+  End: "End",
+  PageUp: "Page Up",
+  PageDown: "Page Down",
+  ArrowUp: "↑",
+  ArrowDown: "↓",
+  ArrowLeft: "←",
+  ArrowRight: "→",
+  ShiftLeft: "Left Shift",
+  ShiftRight: "Right Shift",
+  ControlLeft: "Left Ctrl",
+  ControlRight: "Right Ctrl",
+  AltLeft: "Left Alt",
+  AltRight: "Right Alt",
+  Backquote: "`",
+  Minus: "-",
+  Equal: "=",
+  BracketLeft: "[",
+  BracketRight: "]",
+  Backslash: "\\",
+  Semicolon: ";",
+  Quote: "'",
+  Comma: ",",
+  Period: ".",
+  Slash: "/",
 };
+
+function defaultKeyboardBindings() {
+  return Object.fromEntries(KEYBOARD_ACTIONS.map((action) => [action.id, action.defaultCode]));
+}
+
+function sanitizeKeyboardBindings(raw) {
+  const bindings = {};
+  const used = new Set();
+  for (const action of KEYBOARD_ACTIONS) {
+    let code = raw && typeof raw[action.id] === "string" ? raw[action.id].trim() : action.defaultCode;
+    if (!code || used.has(code)) code = "";
+    if (code) used.add(code);
+    bindings[action.id] = code;
+  }
+  return bindings;
+}
+
+function loadKeyboardProfiles() {
+  const fallback = {
+    current: "Default",
+    profiles: { Default: defaultKeyboardBindings() },
+  };
+  let stored;
+  try {
+    stored = JSON.parse(localStorage.getItem(KEYBOARD_PROFILES_KEY) || "null");
+  } catch {
+    return fallback;
+  }
+  if (!stored || typeof stored !== "object" || !stored.profiles || typeof stored.profiles !== "object") {
+    return fallback;
+  }
+  const profiles = {};
+  for (const [name, raw] of Object.entries(stored.profiles)) {
+    if (!name || ["__proto__", "prototype", "constructor"].includes(name)) continue;
+    if (!raw || typeof raw !== "object") continue;
+    profiles[name] = sanitizeKeyboardBindings(raw);
+  }
+  const names = Object.keys(profiles);
+  if (!names.length) return fallback;
+  const current = typeof stored.current === "string" && profiles[stored.current]
+    ? stored.current
+    : names[0];
+  return { current, profiles };
+}
+
+const loadedKeyboardProfiles = loadKeyboardProfiles();
+let keyboardProfiles = loadedKeyboardProfiles.profiles;
+let keyboardProfile = loadedKeyboardProfiles.current;
+let pendingRebind = null;
+let rebindCleanup = null;
+
+function currentKeyboardBindings() {
+  if (!keyboardProfiles[keyboardProfile]) {
+    keyboardProfile = Object.keys(keyboardProfiles)[0] || "Default";
+    keyboardProfiles[keyboardProfile] ||= defaultKeyboardBindings();
+  }
+  return keyboardProfiles[keyboardProfile];
+}
+
+function saveKeyboardProfiles() {
+  try {
+    localStorage.setItem(KEYBOARD_PROFILES_KEY, JSON.stringify({
+      version: 1,
+      current: keyboardProfile,
+      profiles: keyboardProfiles,
+    }));
+  } catch {}
+}
+
+function keyLabel(code) {
+  if (!code) return "Unbound";
+  if (KEY_LABELS[code]) return KEY_LABELS[code];
+  let match = /^Key([A-Z])$/.exec(code);
+  if (match) return match[1];
+  match = /^Digit([0-9])$/.exec(code);
+  if (match) return match[1];
+  match = /^Numpad([0-9])$/.exec(code);
+  if (match) return `Num ${match[1]}`;
+  match = /^F([0-9]{1,2})$/.exec(code);
+  if (match) return `F${match[1]}`;
+  return code;
+}
+
+function bindingFor(actionId) {
+  const bindings = currentKeyboardBindings();
+  return typeof bindings[actionId] === "string" ? bindings[actionId] : "";
+}
+
+function isKeyboardBound(code) {
+  const bindings = currentKeyboardBindings();
+  return KEYBOARD_ACTIONS.some((action) => bindings[action.id] === code);
+}
+
+function setKeyboardBinding(actionId, code) {
+  const bindings = currentKeyboardBindings();
+  if (!(actionId in bindings)) return;
+  if (code) {
+    // A key can drive only one action. Moving it frees the previous owner.
+    for (const action of KEYBOARD_ACTIONS) {
+      if (action.id !== actionId && bindings[action.id] === code) {
+        bindings[action.id] = "";
+      }
+    }
+  }
+  bindings[actionId] = code;
+  state.keyboard.clear();
+  saveKeyboardProfiles();
+  renderKeyboardBindings();
+}
+
+function cancelRebind(render = true) {
+  pendingRebind = null;
+  if (rebindCleanup) {
+    rebindCleanup();
+    rebindCleanup = null;
+  }
+  if (render) renderKeyboardBindings();
+}
+
+function beginRebind(actionId) {
+  cancelRebind(false);
+  pendingRebind = actionId;
+  renderKeyboardBindings();
+  const handler = (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      cancelRebind();
+      return;
+    }
+    if (event.metaKey || event.ctrlKey || event.altKey) {
+      toast("Use a key without Ctrl, Alt, or Cmd", true);
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    setKeyboardBinding(actionId, event.code);
+    cancelRebind();
+  };
+  window.addEventListener("keydown", handler, true);
+  rebindCleanup = () => window.removeEventListener("keydown", handler, true);
+}
+
+function renderKeyboardBindings() {
+  const select = $("kb-profile");
+  if (!select) return;
+  const bindings = currentKeyboardBindings();
+  select.replaceChildren();
+  for (const name of Object.keys(keyboardProfiles)) {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name;
+    select.append(option);
+  }
+  select.value = keyboardProfile;
+  $("kb-profile-delete").disabled = keyboardProfile === "Default";
+
+  const list = $("keyboard-bindings");
+  list.replaceChildren();
+  for (const action of KEYBOARD_ACTIONS) {
+    const row = document.createElement("div");
+    row.className = "binding-row";
+
+    const label = document.createElement("span");
+    label.textContent = action.label;
+
+    const key = document.createElement("button");
+    key.type = "button";
+    key.className = "binding-key";
+    const code = bindings[action.id] || "";
+    const listening = pendingRebind === action.id;
+    key.classList.toggle("listening", listening);
+    key.classList.toggle("unbound", !code);
+    key.textContent = listening ? "Press a key…" : keyLabel(code);
+    key.title = listening ? "Press a key, or Escape to cancel" : "Click to rebind";
+    key.addEventListener("click", () => beginRebind(action.id));
+
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "binding-clear";
+    clear.textContent = "×";
+    clear.title = "Clear binding";
+    clear.disabled = !code;
+    clear.setAttribute("aria-label", `Clear ${action.label} binding`);
+    clear.addEventListener("click", () => setKeyboardBinding(action.id, ""));
+
+    row.append(label, key, clear);
+    list.append(row);
+  }
+}
 
 function isEditableTarget(target) {
   return target instanceof HTMLElement
@@ -2290,7 +2553,7 @@ window.addEventListener("keydown", (event) => {
   if (settingsIsOpen()) return;
   if (!pinModal.classList.contains("hidden")) return;
   if (isEditableTarget(event.target)) return;
-  if (event.code in KEY_BUTTONS || ["KeyW", "KeyA", "KeyS", "KeyD", "Escape"].includes(event.code)) {
+  if (isKeyboardBound(event.code) || event.code === "Escape") {
     if (event.code !== "Escape") event.preventDefault();
   }
   state.keyboard.add(event.code);
@@ -2351,8 +2614,8 @@ function sendInput() {
   if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
   const buttons = keyboardButtons() | gamepadButtons();
   const pad = activeGamepad();
-  const l2 = Math.max(keyboardTrigger("KeyZ"), mouseTrigger("right"), pad ? Math.round((pad.buttons[6]?.value || 0) * 255) : 0);
-  const r2 = Math.max(keyboardTrigger("KeyC"), mouseTrigger("left"), pad ? Math.round((pad.buttons[7]?.value || 0) * 255) : 0);
+  const l2 = Math.max(keyboardTrigger("l2"), mouseTrigger("right"), pad ? Math.round((pad.buttons[6]?.value || 0) * 255) : 0);
+  const r2 = Math.max(keyboardTrigger("r2"), mouseTrigger("left"), pad ? Math.round((pad.buttons[7]?.value || 0) * 255) : 0);
   let lx = 0, ly = 0, rx = 0, ry = 0;
   if (pad) {
     lx = axisToI16(deadzone(pad.axes[0] || 0));
@@ -2360,10 +2623,10 @@ function sendInput() {
     rx = axisToI16(deadzone(pad.axes[2] || 0));
     ry = axisToI16(deadzone(pad.axes[3] || 0));
   }
-  if (state.keyboard.has("KeyA")) lx = -32767;
-  if (state.keyboard.has("KeyD")) lx = 32767;
-  if (state.keyboard.has("KeyW")) ly = -32767;
-  if (state.keyboard.has("KeyS")) ly = 32767;
+  const keyboardLx = keyboardAxis("lx");
+  const keyboardLy = keyboardAxis("ly");
+  if (keyboardLx !== null) lx = keyboardLx;
+  if (keyboardLy !== null) ly = keyboardLy;
 
   if (state.mouse.locked) {
     rx = clampI16(rx + state.mouse.dx * 700);
@@ -2432,15 +2695,29 @@ function gamepadButtons() {
 }
 
 function keyboardButtons() {
+  const bindings = currentKeyboardBindings();
   let mask = 0;
-  for (const [code, bit] of Object.entries(KEY_BUTTONS)) {
-    if (bit && state.keyboard.has(code)) mask |= bit;
+  for (const action of KEYBOARD_ACTIONS) {
+    if (!action.bit) continue;
+    const code = bindings[action.id];
+    if (code && state.keyboard.has(code)) mask |= action.bit;
   }
   return mask;
 }
 
-function keyboardTrigger(code) {
-  return state.keyboard.has(code) ? 255 : 0;
+function keyboardTrigger(actionId) {
+  const code = bindingFor(actionId);
+  return code && state.keyboard.has(code) ? 255 : 0;
+}
+
+function keyboardAxis(axis) {
+  const bindings = currentKeyboardBindings();
+  for (const action of KEYBOARD_ACTIONS) {
+    if (action.axis !== axis) continue;
+    const code = bindings[action.id];
+    if (code && state.keyboard.has(code)) return action.value;
+  }
+  return null;
 }
 
 function mouseTrigger(button) {
@@ -2641,6 +2918,117 @@ $("settings-scrim").addEventListener("click", closeSettings);
 $("settings-stream-tab").addEventListener("click", () => setSettingsTab("stream"));
 $("settings-picture-tab").addEventListener("click", () => setSettingsTab("picture"));
 $("settings-input-tab").addEventListener("click", () => setSettingsTab("input"));
+
+$("kb-profile").addEventListener("change", (event) => {
+  keyboardProfile = event.target.value;
+  state.keyboard.clear();
+  cancelRebind(false);
+  saveKeyboardProfiles();
+  renderKeyboardBindings();
+});
+$("kb-profile-new").addEventListener("click", () => {
+  const name = (prompt("Name for the new keyboard profile:", `Profile ${Object.keys(keyboardProfiles).length + 1}`) || "").trim();
+  if (!name) return;
+  if (["__proto__", "prototype", "constructor"].includes(name) || !/^[\w .-]{1,32}$/.test(name)) {
+    toast("Use 1–32 letters, numbers, spaces, dots, dashes, or underscores", true);
+    return;
+  }
+  if (keyboardProfiles[name]) {
+    toast("A profile with that name already exists", true);
+    return;
+  }
+  keyboardProfiles[name] = { ...currentKeyboardBindings() };
+  keyboardProfile = name;
+  state.keyboard.clear();
+  saveKeyboardProfiles();
+  renderKeyboardBindings();
+});
+$("kb-profile-delete").addEventListener("click", () => {
+  if (keyboardProfile === "Default") return;
+  if (!confirm(`Delete the keyboard profile "${keyboardProfile}"?`)) return;
+  delete keyboardProfiles[keyboardProfile];
+  keyboardProfile = "Default";
+  state.keyboard.clear();
+  saveKeyboardProfiles();
+  renderKeyboardBindings();
+});
+$("kb-profile-reset").addEventListener("click", () => {
+  if (!confirm(`Reset every binding in "${keyboardProfile}" to the defaults?`)) return;
+  keyboardProfiles[keyboardProfile] = defaultKeyboardBindings();
+  state.keyboard.clear();
+  saveKeyboardProfiles();
+  renderKeyboardBindings();
+});
+renderKeyboardBindings();
+
+const STREAM_OPTION_STORAGE = {
+  resolution: "setu.streamResolution",
+  fps: "setu.streamFps",
+  bitrate: "setu.streamBitrate",
+  codec: "setu.streamCodec",
+  adaptive: "setu.streamAdaptive",
+};
+
+function browserSupportsHevc() {
+  try {
+    const caps = RTCRtpReceiver.getCapabilities?.("video");
+    return !!caps?.codecs?.some(
+      (codec) => String(codec.mimeType || "").toLowerCase() === "video/h265",
+    );
+  } catch {
+    return false;
+  }
+}
+
+function loadStreamOptions() {
+  const read = (key) => {
+    try { return localStorage.getItem(key); } catch { return null; }
+  };
+  const resolution = read(STREAM_OPTION_STORAGE.resolution);
+  if (["1080p", "720p", "540p", "360p"].includes(resolution)) {
+    $("opt-resolution").value = resolution;
+  }
+  const fps = read(STREAM_OPTION_STORAGE.fps);
+  if (fps === "30" || fps === "60") $("opt-fps").value = fps;
+  const bitrate = parseInt(read(STREAM_OPTION_STORAGE.bitrate) || "", 10);
+  if (Number.isFinite(bitrate) && bitrate >= 100 && bitrate <= 100000) {
+    $("opt-bitrate").value = String(bitrate);
+  }
+  const codec = read(STREAM_OPTION_STORAGE.codec);
+  if (["h264", "h265", "h265-hdr"].includes(codec)) $("opt-codec").value = codec;
+  if (read(STREAM_OPTION_STORAGE.adaptive) === "0") $("opt-adaptive").checked = false;
+}
+
+function saveStreamOptions() {
+  try {
+    localStorage.setItem(STREAM_OPTION_STORAGE.resolution, $("opt-resolution").value);
+    localStorage.setItem(STREAM_OPTION_STORAGE.fps, $("opt-fps").value);
+    localStorage.setItem(STREAM_OPTION_STORAGE.bitrate, $("opt-bitrate").value);
+    localStorage.setItem(STREAM_OPTION_STORAGE.codec, $("opt-codec").value);
+    localStorage.setItem(STREAM_OPTION_STORAGE.adaptive, $("opt-adaptive").checked ? "1" : "0");
+  } catch {}
+}
+
+(function initStreamOptions() {
+  loadStreamOptions();
+  const hevc = browserSupportsHevc();
+  const select = $("opt-codec");
+  for (const option of select.options) {
+    if (option.value === "h264") continue;
+    if (!hevc) {
+      option.disabled = true;
+      option.textContent = `${option.textContent} — unavailable`;
+    }
+  }
+  if (!hevc) select.value = "h264";
+  $("codec-support").textContent = hevc
+    ? "H.265 uses hardware HEVC decode in this browser. HDR also needs an HDR display and Main10 hardware decode."
+    : "This browser does not expose hardware HEVC over WebRTC, so H.265 is disabled. Chrome 136+ and Safari 18+ can expose it on supported hardware.";
+  for (const id of ["opt-resolution", "opt-fps", "opt-bitrate", "opt-codec", "opt-adaptive"]) {
+    $(id).addEventListener("change", saveStreamOptions);
+  }
+  saveStreamOptions();
+})();
 
 document.addEventListener("click", (event) => {
   for (const menu of document.querySelectorAll(".row-menu[open]")) {

@@ -6,8 +6,10 @@ use std::time::{Duration, Instant};
 use crate::takion::seq32_lt;
 
 pub const RESEND_TIMEOUT: Duration = Duration::from_millis(200);
-/// Stop waiting for a cumulative ACK after this many retransmissions. At the
-/// default 200 ms timeout this is roughly five seconds of a silent console.
+/// Drop a control packet after this many retransmissions. At the default
+/// 200 ms timeout this is roughly five seconds. A lost ACK does not mean the
+/// console is gone: media may still be flowing, so the Takion driver keeps
+/// running and uses an inbound-silence watchdog to detect a dead peer.
 pub const RESEND_TRIES_MAX: u64 = 25;
 
 #[derive(Debug)]
@@ -59,15 +61,15 @@ impl SendBuffer {
     }
 
     /// Mark all due packets as retransmitted and return their bytes. The
-    /// second value is true once a packet has exceeded `RESEND_TRIES_MAX`;
-    /// the caller should treat the peer as dead rather than retrying forever.
+    /// second value is true when at least one packet exceeded
+    /// `RESEND_TRIES_MAX` and was dropped. Other pending packets are kept.
     pub fn take_due(&mut self, now: Instant) -> (Vec<Vec<u8>>, bool) {
         let mut out = Vec::new();
-        let mut exhausted = false;
+        let mut gave_up = false;
         for entry in &mut self.entries {
             if now.saturating_duration_since(entry.last_sent) > RESEND_TIMEOUT {
                 if entry.tries >= RESEND_TRIES_MAX {
-                    exhausted = true;
+                    gave_up = true;
                     continue;
                 }
                 entry.last_sent = now;
@@ -75,10 +77,10 @@ impl SendBuffer {
                 out.push(entry.buf.clone());
             }
         }
-        if exhausted {
-            self.entries.clear();
+        if gave_up {
+            self.entries.retain(|entry| entry.tries < RESEND_TRIES_MAX);
         }
-        (out, exhausted)
+        (out, gave_up)
     }
 
     pub fn clear(&mut self) {
@@ -130,21 +132,23 @@ mod tests {
     }
 
     #[test]
-    fn unacked_packets_eventually_declare_the_peer_dead() {
+    fn unacked_packets_are_dropped_without_dropping_younger_ones() {
         let now = Instant::now();
         let mut b = SendBuffer::new(2);
         b.push(1, vec![1], now);
         let mut at = now;
         for _ in 0..RESEND_TRIES_MAX {
             at += Duration::from_millis(300);
-            let (due, exhausted) = b.take_due(at);
-            assert!(!exhausted);
+            let (due, gave_up) = b.take_due(at);
+            assert!(!gave_up);
             assert_eq!(due, vec![vec![1]]);
         }
+        // A younger packet, queued just before the old one exhausts.
+        b.push(2, vec![2], at);
         at += Duration::from_millis(300);
-        let (due, exhausted) = b.take_due(at);
-        assert!(due.is_empty());
-        assert!(exhausted);
-        assert!(b.is_empty());
+        let (due, gave_up) = b.take_due(at);
+        assert_eq!(due, vec![vec![2]]);
+        assert!(gave_up);
+        assert_eq!(b.len(), 1, "the younger packet must stay queued");
     }
 }

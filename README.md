@@ -17,7 +17,7 @@ bridges the console protocol to the browser:
 ```
 Browser  ── HTTP + WebSocket ──▶  setu  ── TCP/UDP ──▶  Console
    ▲                                  │
-   └──────── WebRTC (H.264/Opus) ◀────┘
+   └────── WebRTC (H.264/H.265 + Opus) ◀──┘
 ```
 
 The server owns registration, discovery, session negotiation, the Takion UDP
@@ -61,7 +61,8 @@ firmware, artwork, or keys extracted from Sony software by this project. See
 - Session request with RP-Version negotiation (PS4 8.0/9.0/10.0, PS5 1.0)
 - Ctrl channel: session id, console PIN login, heartbeat, standby (`goto bed`)
 - Takion transport: handshake, RPCrypt/GKCrypt, GMAC, reordering, retransmit
-- H.264 video and Opus audio with Reed–Solomon FEC, gap detection, and IDR resync
+- H.264 or H.265 video (including experimental HDR) and Opus audio with
+  Reed–Solomon FEC, gap detection, and IDR resync
 - WebRTC delivery with non-trickle ICE (loopback or LAN), plus automatic ICE
   restart and WebSocket reconnection when the link drops
 - Senkusha pre-stream probing on UDP 9297 for MTU and RTT; the measured RTT is
@@ -69,12 +70,16 @@ firmware, artwork, or keys extracted from Sony software by this project. See
 - Gamepad, keyboard/mouse, and touch input; rumble events; latency and packet
   stats. Latency is the round-trip time to the console: measured by Senkusha at
   stream start, then updated from the console's own connection-quality reports.
+- Configurable keyboard binding profiles, saved per browser and switchable
+  under **Settings → Input**.
+- Cross-session adaptive bitrate: sustained packet loss steps the next
+  session's starting bitrate down; clean sessions step it back up.
 - Demo mode that streams a local H.264 file with no console attached
 
-Deferred/unsupported (see [Limitations](#limitations)): H.265/HDR delivery to
-the browser, PSN cloud streaming, DualSense haptics and adaptive triggers,
-keyboard text entry, and multi-controller. Remote binds require
-`--allow-remote`; optional token auth is covered under
+Deferred/unsupported (see [Limitations](#limitations)): PSN cloud streaming,
+DualSense haptics and full adaptive-trigger modes, keyboard text entry,
+multi-controller, and microphone input. Remote binds require `--allow-remote`;
+optional token auth is covered under
 [LAN access and authentication](#lan-access-and-authentication).
 
 ## Requirements
@@ -89,7 +94,10 @@ keyboard text entry, and multi-controller. Remote binds require
   redirect URL/code in the Add console panel to fetch it automatically. It is
   saved on this device for later registrations. PS4 system software older than
   7.0 can use the PSN Online ID instead.
-- A browser with H.264 support in WebRTC (Chrome, Edge, Safari, Firefox)
+- A browser with H.264 support in WebRTC (Chrome, Edge, Safari, Firefox).
+  H.265 is optional and additionally requires a PS5 plus hardware HEVC decode
+  exposed over WebRTC (Chrome 136+ or Safari 18+ on supported hardware;
+  Firefox and current Edge do not offer it).
 
 ## Install and run
 
@@ -242,6 +250,22 @@ console present; stats update live.
   use 10 Mbps at 720p and 15 Mbps at 1080p; try 20000–30000 for 1080p. Higher
   bitrate preserves detail and motion sharpness at the cost of Wi-Fi/network
   bandwidth. Leave the field empty to use the preset value.
+- **Adaptive bitrate** (on by default) records packet loss after a 5-second
+  warm-up and, at session end, moves the next start one rung down the
+  3/5/7/10/15/20/25/30 Mbps ladder when loss averaged at least 1.5%, or when
+  any one-second window reached 5% (burst loss). Two sessions below 0.3%
+  average and 1% peak move it back up. The launch spec fixes the encoder
+  rate for the life of a session and the protocol has no retarget command, so
+  this takes effect on the **next** connection, not mid-stream. The live stats
+  show the current loss estimate, and the server tells you when the next start
+  will change. State is stored per console in `hosts.json`; changing the manual
+  bitrate resets the stored step.
+- **Codec** is under **Settings → Stream**. H.264 is the compatible default.
+  H.265/HEVC can roughly halve bandwidth at similar quality on a PS5 when the
+  browser has hardware HEVC in WebRTC; HDR additionally needs Main10 decode and
+  an HDR display. Setu feature-detects HEVC and leaves the options disabled when the
+  browser does not advertise it. The server verifies that the browser's SDP
+  answer actually accepted the offered codec before the stream starts.
 - **Sharpness** (0–100, default 35; **Settings → Picture**) runs a two-pass
   WebGL2 post-process over the received video: FSR 1 **EASU** reconstructs the
   frame at the display's native pixel grid (up to a 4K target), then **RCAS**
@@ -265,8 +289,9 @@ console present; stats update live.
   gradually.
 - Sharpening cannot recover detail the console encoder discarded — pair it with
   a suitable bitrate. Resolution and FPS are encoded on the console and are
-  requested under **Settings → Stream**. The keyboard/controller legend is
-  under **Settings → Input**.
+  requested under **Settings → Stream**. Keyboard bindings and profile
+  management are under **Settings → Input**; each key can be rebound, cleared,
+  or reset, and profiles are stored in this browser.
 
 ## Configuration and privacy
 
@@ -335,10 +360,17 @@ that exercises session → ctrl → Takion → encryption → launch spec → st
 
 ## Limitations
 
-- **H.264 only in the browser.** The core can parse H.265 NAL units, but the
-  WebRTC bridge only advertises and forwards H.264. The start endpoint rejects
-  `h265`/`h265-hdr` with a clear error instead of negotiating a stream the
-  browser cannot render.
+- **H.265 depends on the console and the browser.** PS4 sessions are H.264
+  only. PS5 can deliver H.265, but the browser must expose hardware HEVC over
+  WebRTC (Chrome 136+ or Safari 18+; Firefox and current Edge do not). HDR
+  also requires Main10 hardware decode and an HDR display. If the browser's
+  answer does not accept the offered codec, the start fails with a clear error
+  instead of running a stream that never displays.
+- **Adaptive bitrate cannot retarget a live stream.** The launch spec fixes
+  the console encoder's bitrate for the whole session, and the protocol has no
+  mid-session command to change it. Setu adapts the next session's starting
+  bitrate from measured loss. It does not drop or re-encode frames to fake a
+  lower live rate.
 - **PS5 support is protocol 1.0 only**, matching Chiaki v2.2.0. Newer console
   firmware may change or reject the handshake.
 - **No PSN cloud streaming.** Local-console Remote Play is supported; PSN cloud

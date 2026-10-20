@@ -31,6 +31,14 @@ const POSTPONE_MAX: usize = 32;
 const DATA_QUEUE_EXP: u8 = 4; // 16 entries
 const SEND_BUFFER_SIZE: usize = 16; // matches TAKION_SEND_BUFFER_SIZE
 const RECV_BUFFER_SIZE: usize = 65535;
+/// Drain up to this many queued datagrams before returning to the select
+/// loop. This keeps the kernel receive buffer from overflowing during a
+/// burst without starving commands or the retransmit tick.
+const RECV_BATCH_MAX: usize = 64;
+/// Fail only when nothing at all has arrived from the console for this long.
+/// A brief run of lost control ACKs no longer kills a session whose media is
+/// still flowing.
+const PEER_SILENCE_TIMEOUT: Duration = Duration::from_secs(15);
 /// Stream-control messages (corrupt-frame reports and IDR requests) use chunk
 /// flags 1 and channel 2. Swapping these makes the console silently ignore
 /// frame-loss reports.
@@ -397,12 +405,10 @@ pub(crate) fn make_socket(addr: SocketAddr) -> Result<UdpSocket> {
     };
     let socket =
         Socket::new(domain, Type::DGRAM, Some(Protocol::UDP)).map_err(|_| Error::Network)?;
-    socket
-        .set_recv_buffer_size(1 << 20)
-        .map_err(|_| Error::Network)?;
-    socket
-        .set_send_buffer_size(1 << 20)
-        .map_err(|_| Error::Network)?;
+    // Absorb a burst while frame assembly is busy. The kernel may cap this
+    // below the request; buffers are an optimisation, not a hard requirement.
+    let _ = socket.set_recv_buffer_size(4 << 20);
+    let _ = socket.set_send_buffer_size(4 << 20);
     socket.connect(&addr.into()).map_err(|_| Error::Network)?;
     socket.set_nonblocking(true).map_err(|_| Error::Network)?;
     let std_sock: std::net::UdpSocket = socket.into();
@@ -558,6 +564,17 @@ pub async fn connect(addr: SocketAddr, info: TakionConnectInfo) -> Result<Takion
     })
 }
 
+fn log_received(datagrams: &mut u32, n: usize, buf: &[u8]) {
+    *datagrams += 1;
+    if *datagrams <= 8 {
+        tracing::info!(
+            "takion: datagram {}: {n} bytes (base type {})",
+            *datagrams,
+            buf[0] & PACKET_BASE_TYPE_MASK
+        );
+    }
+}
+
 async fn run(
     sock: UdpSocket,
     mut state: State,
@@ -569,6 +586,7 @@ async fn run(
     let mut tick = tokio::time::interval(Duration::from_millis(50));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut datagrams = 0u32;
+    let mut last_rx = Instant::now();
 
     loop {
         tokio::select! {
@@ -576,15 +594,30 @@ async fn run(
             received = sock.recv(&mut buf) => {
                 match received {
                     Ok(n) if n > 0 => {
-                        datagrams += 1;
-                        if datagrams <= 8 {
-                            tracing::info!(
-                                "takion: datagram {datagrams}: {n} bytes (base type {})",
-                                buf[0] & PACKET_BASE_TYPE_MASK
-                            );
-                        }
+                        last_rx = Instant::now();
+                        log_received(&mut datagrams, n, &buf);
                         if let Err(e) = handle_datagram(&sock, &mut state, &mut buf[..n], &events).await {
                             tracing::warn!("takion packet rejected: {e}");
+                        }
+                        // Drain datagrams already waiting in the kernel
+                        // without another scheduler round-trip. A burst that
+                        // arrives while one packet is being processed would
+                        // otherwise compete with a 1 MiB socket buffer.
+                        for _ in 1..RECV_BATCH_MAX {
+                            match sock.try_recv(&mut buf) {
+                                Ok(n) if n > 0 => {
+                                    last_rx = Instant::now();
+                                    log_received(&mut datagrams, n, &buf);
+                                    if let Err(e) =
+                                        handle_datagram(&sock, &mut state, &mut buf[..n], &events).await
+                                    {
+                                        tracing::warn!("takion packet rejected: {e}");
+                                    }
+                                }
+                                Ok(_) => break,
+                                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                                Err(_) => break,
+                            }
                         }
                     }
                     Ok(_) => {}
@@ -598,7 +631,14 @@ async fn run(
                 }
             }
             _ = tick.tick() => {
-                let (due, exhausted) = state.send_buffer.take_due(Instant::now());
+                if last_rx.elapsed() >= PEER_SILENCE_TIMEOUT {
+                    tracing::warn!(
+                        "takion: no packets from the console for {} s; closing the session",
+                        PEER_SILENCE_TIMEOUT.as_secs()
+                    );
+                    break;
+                }
+                let (due, gave_up) = state.send_buffer.take_due(Instant::now());
                 if !due.is_empty() {
                     tracing::info!("takion: retransmitting {} packet(s)", due.len());
                 }
@@ -607,11 +647,13 @@ async fn run(
                         break;
                     }
                 }
-                if exhausted {
+                if gave_up {
+                    // Lost ACKs for control messages do not imply a dead
+                    // console. The inbound-silence watchdog above is the
+                    // liveness check; keep forwarding media in the meantime.
                     tracing::warn!(
-                        "takion: console stopped acknowledging packets; closing the session"
+                        "takion: dropped control packets the console did not acknowledge; media continues"
                     );
-                    break;
                 }
             }
         }
