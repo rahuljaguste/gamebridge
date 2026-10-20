@@ -92,11 +92,16 @@ struct ConfigFile {
     adaptive: Vec<AdaptiveRecord>,
 }
 
-const CONFIG_DIR_NAME: &str = "setu";
-/// The previous product name. Kept only to migrate existing registrations.
-const LEGACY_CONFIG_DIR_NAME: &str = "ps-remoteplay";
+const CONFIG_DIR_NAME: &str = "gamebridge";
+/// Previous product names, newest first. Kept only to migrate registrations.
+const LEGACY_CONFIG_DIR_NAMES: [&str; 2] = ["setu", "ps-remoteplay"];
 
 fn resolve_default_dir() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("GAMEBRIDGE_CONFIG_DIR") {
+        return Ok(PathBuf::from(dir));
+    }
+    // Keep the previous variable working so an existing setup does not appear
+    // to lose its registrations.
     if let Some(dir) = std::env::var_os("SETU_CONFIG_DIR") {
         return Ok(PathBuf::from(dir));
     }
@@ -107,29 +112,38 @@ fn resolve_default_dir() -> Result<PathBuf> {
     Ok(migrate_in(base))
 }
 
-/// Use `base/setu`, copying `base/ps-remoteplay/hosts.json` on first run so an
-/// existing console registration is not lost. The legacy directory is left
-/// untouched and is used as a fallback if the copy fails.
+/// Use `base/gamebridge`, copying `hosts.json` from `base/setu` or, failing
+/// that, `base/ps-remoteplay` on first run so an existing console registration
+/// is not lost. Legacy directories are left untouched and used as a fallback
+/// if the copy fails.
 fn migrate_in(base: PathBuf) -> PathBuf {
     let dir = base.join(CONFIG_DIR_NAME);
-    let legacy = base.join(LEGACY_CONFIG_DIR_NAME);
-    let old_hosts = legacy.join("hosts.json");
     let new_hosts = dir.join("hosts.json");
-    if !new_hosts.exists() && old_hosts.exists() {
-        match copy_legacy_hosts(&old_hosts, &new_hosts) {
-            Ok(()) => eprintln!(
-                "setu: migrated console registrations from {} to {}",
-                old_hosts.display(),
-                new_hosts.display()
-            ),
-            Err(error) => {
-                eprintln!(
-                    "setu: could not migrate {} to {}: {error}; using the legacy directory",
-                    old_hosts.display(),
-                    new_hosts.display()
-                );
-                return legacy;
+    if !new_hosts.exists() {
+        for name in LEGACY_CONFIG_DIR_NAMES {
+            let legacy = base.join(name);
+            let old_hosts = legacy.join("hosts.json");
+            if !old_hosts.exists() {
+                continue;
             }
+            return match copy_legacy_hosts(&old_hosts, &new_hosts) {
+                Ok(()) => {
+                    eprintln!(
+                        "gamebridge: migrated console registrations from {} to {}",
+                        old_hosts.display(),
+                        new_hosts.display()
+                    );
+                    dir
+                }
+                Err(error) => {
+                    eprintln!(
+                        "gamebridge: could not migrate {} to {}: {error}; using the legacy directory",
+                        old_hosts.display(),
+                        new_hosts.display()
+                    );
+                    legacy
+                }
+            };
         }
     }
     dir
@@ -290,7 +304,7 @@ mod tests {
     #[test]
     fn migrates_legacy_directory_once() {
         let base = tempfile::tempdir().expect("tempdir");
-        let legacy = base.path().join(LEGACY_CONFIG_DIR_NAME);
+        let legacy = base.path().join("setu");
         fs::create_dir_all(&legacy).expect("legacy dir");
         fs::write(legacy.join("hosts.json"), br#"{"hosts":[]}"#).expect("legacy hosts");
 
@@ -326,5 +340,33 @@ mod tests {
                 0o700
             );
         }
+    }
+
+    #[test]
+    fn migrates_prefers_setu_then_falls_back_to_ps_remoteplay() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let older = base.path().join("ps-remoteplay");
+        fs::create_dir_all(&older).expect("older dir");
+        fs::write(older.join("hosts.json"), br#"{"hosts":[1]}"#).expect("older hosts");
+        let newer = base.path().join("setu");
+        fs::create_dir_all(&newer).expect("newer dir");
+        fs::write(newer.join("hosts.json"), br#"{"hosts":[2]}"#).expect("newer hosts");
+
+        let dir = migrate_in(base.path().to_path_buf());
+        assert_eq!(dir, base.path().join(CONFIG_DIR_NAME));
+        assert_eq!(
+            fs::read(dir.join("hosts.json")).expect("migrated hosts"),
+            br#"{"hosts":[2]}"#
+        );
+
+        let only_older = tempfile::tempdir().expect("tempdir");
+        let legacy = only_older.path().join("ps-remoteplay");
+        fs::create_dir_all(&legacy).expect("legacy dir");
+        fs::write(legacy.join("hosts.json"), br#"{"hosts":[3]}"#).expect("legacy hosts");
+        let dir = migrate_in(only_older.path().to_path_buf());
+        assert_eq!(
+            fs::read(dir.join("hosts.json")).expect("migrated hosts"),
+            br#"{"hosts":[3]}"#
+        );
     }
 }

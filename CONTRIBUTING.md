@@ -2,7 +2,7 @@
 
 ## License
 
-Setu is licensed **AGPL-3.0-only** and is a derivative work of Chiaki v2.2.0.
+GameBridge is licensed **AGPL-3.0-only** and is a derivative work of Chiaki v2.2.0.
 By contributing, you agree that your contributions are licensed under
 AGPL-3.0-only. The project is permanently AGPL-3.0-only as a Chiaki derivative
 and cannot be relicensed permissively.
@@ -28,7 +28,7 @@ cargo test --workspace
 python3 tools/gen_licenses.py --check
 ```
 
-Run the bridge with `cargo run -p setu-server -- --demo-file demo.h264` to test
+Run the bridge with `cargo run -p gamebridge-server -- --demo-file demo.h264` to test
 the browser path without a console. Tests must not require a real PSN account,
 console, or network access.
 

@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
-const COOKIE_NAME: &str = "setu_auth";
+const COOKIE_NAME: &str = "gamebridge_auth";
 const COOKIE_MAX_AGE: u64 = 30 * 24 * 60 * 60;
 const SESSION_TTL: Duration = Duration::from_secs(COOKIE_MAX_AGE);
 /// A failed login is delayed so a weak token cannot be guessed at wire speed.
@@ -292,7 +292,7 @@ pub async fn require(State(auth): State<Auth>, request: Request, next: Next) -> 
     tokio::time::sleep(auth.failure_delay(ip)).await;
     (
         StatusCode::UNAUTHORIZED,
-        [(header::WWW_AUTHENTICATE, "Bearer realm=\"setu\"")],
+        [(header::WWW_AUTHENTICATE, "Bearer realm=\"gamebridge\"")],
         Json(serde_json::json!({ "error": "authentication required" })),
     )
         .into_response()

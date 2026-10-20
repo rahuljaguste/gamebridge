@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Setu — an unofficial browser bridge for PlayStation Remote Play.
+//! GameBridge — an unofficial browser bridge for PlayStation Remote Play.
 
 mod adaptive;
 mod config;
@@ -27,7 +27,7 @@ use crate::state::AppState;
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "setu",
+    name = "gamebridge",
     version,
     about = "Unofficial browser bridge for PlayStation Remote Play"
 )]
@@ -181,7 +181,7 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| format!("failed to bind {}", args.bind))?;
     println!();
-    println!("  Setu v{}", env!("CARGO_PKG_VERSION"));
+    println!("  GameBridge v{}", env!("CARGO_PKG_VERSION"));
     println!("  Open http://{}/", args.bind);
     println!("  Log:  {}", log_path.display());
     println!(

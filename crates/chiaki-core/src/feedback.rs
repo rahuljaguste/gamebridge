@@ -78,9 +78,9 @@ pub fn format_v9(state: &FeedbackState) -> [u8; 0x19] {
     let mut buf = [0u8; 0x19];
     buf[0] = 0xa0;
     let gyro =
-        |v: f32| ((0xffff as f32 * (v - GYRO_MIN) / (GYRO_MAX - GYRO_MIN)) as u16).to_be_bytes();
+        |v: f32| ((0xffff as f32 * (v - GYRO_MIN) / (GYRO_MAX - GYRO_MIN)) as u16).to_le_bytes();
     let accel =
-        |v: f32| ((0xffff as f32 * (v - ACCEL_MIN) / (ACCEL_MAX - ACCEL_MIN)) as u16).to_be_bytes();
+        |v: f32| ((0xffff as f32 * (v - ACCEL_MIN) / (ACCEL_MAX - ACCEL_MIN)) as u16).to_le_bytes();
     buf[1..3].copy_from_slice(&gyro(state.gyro_x));
     buf[3..5].copy_from_slice(&gyro(state.gyro_y));
     buf[5..7].copy_from_slice(&gyro(state.gyro_z));
@@ -93,7 +93,7 @@ pub fn format_v9(state: &FeedbackState) -> [u8; 0x19] {
         state.orient_z,
         state.orient_w,
     ]);
-    buf[13..17].copy_from_slice(&qc.to_be_bytes());
+    buf[13..17].copy_from_slice(&qc.to_le_bytes());
     put_i16_be(&mut buf, 0x11, state.left_x);
     put_i16_be(&mut buf, 0x13, state.left_y);
     put_i16_be(&mut buf, 0x15, state.right_x);
@@ -251,5 +251,49 @@ mod tests {
         let state = FeedbackState::default();
         assert_eq!(format_v9(&state).len(), 0x19);
         assert_eq!(format_v12(&state).len(), 0x1c);
+    }
+
+    #[test]
+    fn v9_motion_is_little_endian_and_sticks_are_big_endian() {
+        let state = FeedbackState {
+            gyro_x: 30.0,
+            gyro_y: -30.0,
+            gyro_z: 0.0,
+            accel_x: 5.0,
+            accel_y: -5.0,
+            accel_z: 0.0,
+            orient_x: 0.0,
+            orient_y: 0.0,
+            orient_z: 0.0,
+            orient_w: 1.0,
+            left_x: 0x1234,
+            left_y: -2,
+            right_x: 0x7fff,
+            right_y: i16::MIN,
+        };
+        assert_eq!(
+            format_v9(&state),
+            [
+                0xa0, 0xff, 0xff, 0x00, 0x00, 0xff, 0x7f, 0xff, 0xff, 0x00, 0x00, 0xff, 0x7f, 0xfe,
+                0xf7, 0xef, 0x1f, 0x12, 0x34, 0xff, 0xfe, 0x7f, 0xff, 0x80, 0x00,
+            ]
+        );
+    }
+
+    #[test]
+    fn idle_motion_matches_reference_bytes() {
+        // chiaki_feedback_state_format_v9 writes gyro, accel, and quaternion
+        // little-endian, while the sticks stay big-endian.
+        let state = FeedbackState::from(&ControllerState::idle());
+        let v9 = format_v9(&state);
+        assert_eq!(
+            &v9[1..17],
+            &[
+                0xff, 0x7f, 0xff, 0x7f, 0xff, 0x7f, // gyro 0.0 -> 0x7fff
+                0xff, 0x7f, 0x99, 0x99, 0xff, 0x7f, // accel 0 g, 1 g, 0 g
+                0xfe, 0xf7, 0xef, 0x1f, // quat (0, 0, 0, 1) -> 0x1feff7fe
+            ]
+        );
+        assert_eq!(&v9[0x11..], &[0, 0, 0, 0, 0, 0, 0, 0]);
     }
 }
