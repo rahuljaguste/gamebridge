@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Forward complete H.264 access units to the WebRTC video track.
+//! Forward complete video access units (H.264 or H.265) to the WebRTC track.
 //!
-//! The bridge never sends a partial frame. It starts at an IDR, detects frame
-//! index gaps, and asks the console for a fresh keyframe when needed.
+//! The bridge never sends a partial frame. It starts at an IDR/IRAP, detects
+//! frame index gaps, and asks the console for a fresh keyframe when needed.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

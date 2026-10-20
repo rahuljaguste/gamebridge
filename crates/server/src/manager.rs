@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Owns a live session and the WebRTC bridges for its lifetime.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -16,6 +16,7 @@ use chiaki_core::media::audio::AudioFrame;
 use chiaki_core::media::ingest::VideoFrame;
 use chiaki_core::session::{Session, SessionCommand, SessionEvent, SessionPhase};
 
+use crate::adaptive::{self, AdaptiveContext, SessionQuality};
 use crate::state::{AppState, ProfileView, ServerEvent};
 use crate::webrtc::audio_bridge;
 use crate::webrtc::video_bridge;
@@ -89,17 +90,29 @@ pub async fn run(
     shared: Arc<MediaShared>,
     bridge_cancel: CancellationToken,
     frame_duration: Duration,
+    adaptive_ctx: Option<AdaptiveContext>,
     mut stop_rx: oneshot::Receiver<()>,
 ) {
+    let stream_started: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
     let forwarder_cancel = bridge_cancel.clone();
     let forwarder_shared = shared.clone();
     let forwarder_state = state.clone();
+    let forwarder_started = stream_started.clone();
     let forwarder = tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = forwarder_cancel.cancelled() => break,
                 event = events_rx.recv() => {
                     let Some(event) = event else { break };
+                    if matches!(
+                        &event,
+                        SessionEvent::Connected | SessionEvent::Phase(SessionPhase::Streaming)
+                    ) {
+                        let mut started = forwarder_started
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner());
+                        started.get_or_insert_with(Instant::now);
+                    }
                     if let Some(out) = forward_event(event, &forwarder_shared) {
                         forwarder_state.publish(out);
                     }
@@ -132,6 +145,9 @@ pub async fn run(
     let stats = session.stats.clone();
     let stats_shared = shared.clone();
     let stats_state = state.clone();
+    let quality = Arc::new(Mutex::new(SessionQuality::new()));
+    let stats_quality = quality.clone();
+    let stats_started = stream_started.clone();
     let stats_task = tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(1));
         loop {
@@ -141,8 +157,26 @@ pub async fn run(
                     // `get(false)` is the 200 ms congestion window; the UI
                     // needs the cumulative totals instead.
                     let (received, lost) = stats.totals();
+                    let started = *stats_started
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    let loss_pct = {
+                        let mut quality = stats_quality
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner());
+                        if let Some(started) = started {
+                            quality.mark_started(started);
+                        }
+                        quality.sample(received, lost, Instant::now());
+                        quality.loss_pct()
+                    };
                     let latency_ms = *stats_shared.latency_ms.lock().unwrap();
-                    stats_state.publish(ServerEvent::Stats { received, lost, latency_ms });
+                    stats_state.publish(ServerEvent::Stats {
+                        received,
+                        lost,
+                        loss_pct,
+                        latency_ms,
+                    });
                 }
             }
         }
@@ -190,6 +224,25 @@ pub async fn run(
     let _ = video.await;
     let _ = audio.await;
     let _ = stats_task.await;
+    let (loss_pct, peak_loss_pct, packets, elapsed) = {
+        let quality = quality.lock().unwrap_or_else(|error| error.into_inner());
+        (
+            quality.overall_loss_pct(),
+            quality.peak_loss_pct(),
+            quality.observed_packets(),
+            quality.elapsed(),
+        )
+    };
+    if let (Some(context), Some(loss)) = (adaptive_ctx.as_ref(), loss_pct) {
+        let peak = peak_loss_pct.unwrap_or(loss);
+        if let Some(message) =
+            adaptive::record(&state.config, context, loss, peak, packets, elapsed)
+        {
+            tracing::info!("adaptive bitrate: {message}");
+            // Publish before Quit so the browser still has the session view up.
+            state.publish(ServerEvent::Notice { message });
+        }
+    }
     let _ = peers.peer.close().await;
     session.stop().await;
 

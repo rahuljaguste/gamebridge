@@ -10,7 +10,8 @@ use chiaki_core::media::audio::AudioFormat;
 
 #[derive(Default)]
 pub struct MediaShared {
-    /// SPS/PPS Annex-B blob from the stream info / video format event.
+    /// Parameter-set Annex-B blob from the stream info / video format event:
+    /// SPS/PPS for H.264, VPS/SPS/PPS for H.265.
     pub param_sets: Mutex<Vec<Bytes>>,
     pub audio_format: Mutex<Option<AudioFormat>>,
     /// Latest console round-trip time, surfaced in the periodic stats event.

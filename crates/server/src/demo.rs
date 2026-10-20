@@ -50,7 +50,7 @@ pub async fn start(
         return Err(ApiError::bad_request("demo file has no H.264 access units"));
     }
 
-    let peers = webrtc::create_peer(state.events.clone())
+    let peers = webrtc::create_peer(state.events.clone(), Codec::H264)
         .await
         .map_err(|e| ApiError::internal(format!("WebRTC setup failed: {e:#}")))?;
     let offer_sdp = peers.offer_sdp.clone();
@@ -63,6 +63,7 @@ pub async fn start(
     let active = ActiveSession {
         id,
         host_id: "demo".to_string(),
+        codec: Codec::H264,
         input: input_tx,
         commands: cmd_tx,
         peer: peers.peer.clone(),
@@ -99,6 +100,9 @@ pub async fn start(
             kind: "offer".to_string(),
             sdp: offer_sdp,
         },
+        bitrate_kbps: 0,
+        adaptive: false,
+        adaptive_stepped_down: false,
     }))
 }
 

@@ -29,6 +29,10 @@ pub struct ConnectInfo {
     pub morning: [u8; 16],
     pub video: VideoProfile,
     pub auto_downgrade: bool,
+    /// When false, a console that reports no HEVC support fails the session
+    /// instead of silently switching to H.264. The browser bridge builds its
+    /// WebRTC track for one codec, so it cannot follow a silent downgrade.
+    pub allow_codec_fallback: bool,
     pub enable_dualsense: bool,
     /// Device id sent to the console.
     pub did: [u8; 32],
@@ -53,6 +57,7 @@ impl ConnectInfo {
             morning,
             video,
             auto_downgrade: true,
+            allow_codec_fallback: true,
             enable_dualsense: false,
             did,
         }

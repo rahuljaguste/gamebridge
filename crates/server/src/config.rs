@@ -74,10 +74,22 @@ pub fn parse_target(s: &str) -> Result<Target> {
     }
 }
 
+/// Cross-session adaptive bitrate state for one console.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdaptiveRecord {
+    pub host_id: String,
+    pub base_kbps: u32,
+    pub current_kbps: u32,
+    #[serde(default)]
+    pub clean_sessions: u32,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct ConfigFile {
     #[serde(default)]
     hosts: Vec<StoredHost>,
+    #[serde(default)]
+    adaptive: Vec<AdaptiveRecord>,
 }
 
 const CONFIG_DIR_NAME: &str = "setu";
@@ -205,10 +217,29 @@ impl ConfigStore {
         let before = inner.hosts.len();
         inner.hosts.retain(|h| h.id != id);
         let removed = inner.hosts.len() != before;
-        if removed {
+        let adaptive_before = inner.adaptive.len();
+        inner.adaptive.retain(|a| a.host_id != id);
+        if removed || inner.adaptive.len() != adaptive_before {
             self.save(&inner)?;
         }
         Ok(removed)
+    }
+
+    pub fn adaptive(&self, host_id: &str) -> Option<AdaptiveRecord> {
+        self.inner
+            .lock()
+            .unwrap()
+            .adaptive
+            .iter()
+            .find(|a| a.host_id == host_id)
+            .cloned()
+    }
+
+    pub fn set_adaptive(&self, record: AdaptiveRecord) -> Result<()> {
+        let mut inner = self.inner.lock().unwrap();
+        inner.adaptive.retain(|a| a.host_id != record.host_id);
+        inner.adaptive.push(record);
+        self.save(&inner)
     }
 
     fn save(&self, file: &ConfigFile) -> Result<()> {
@@ -237,6 +268,24 @@ impl ConfigStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adaptive_state_round_trips() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let record = AdaptiveRecord {
+            host_id: "host".to_string(),
+            base_kbps: 15000,
+            current_kbps: 10000,
+            clean_sessions: 1,
+        };
+        {
+            let store = ConfigStore::load(Some(dir.path().to_path_buf())).expect("store");
+            store.set_adaptive(record.clone()).expect("save");
+        }
+        let store = ConfigStore::load(Some(dir.path().to_path_buf())).expect("reload");
+        assert_eq!(store.adaptive("host"), Some(record));
+        assert_eq!(store.adaptive("missing"), None);
+    }
 
     #[test]
     fn migrates_legacy_directory_once() {

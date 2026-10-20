@@ -28,14 +28,10 @@ impl Drop for WsClientGuard {
 }
 
 async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
-    let (input, commands, session_id) = {
+    let session_id = {
         let active = state.active.lock().await;
         match active.as_ref() {
-            Some(active) => (
-                active.input.clone(),
-                active.commands.clone(),
-                active.id.to_string(),
-            ),
+            Some(active) => active.id.to_string(),
             None => {
                 let _ = socket
                     .send(Message::Text(
@@ -95,7 +91,28 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                 let Some(Ok(message)) = message else { break };
                 match message {
                     Message::Text(text) => {
-                        if let Err(message) = handle_client_message(text.as_str(), &input, &commands) {
+                        // Read the current session's channels for every
+                        // message. A session restart replaces them, and this
+                        // socket stays connected across that.
+                        let io = {
+                            let active = state.active.lock().await;
+                            active
+                                .as_ref()
+                                .map(|active| (active.input.clone(), active.commands.clone()))
+                        };
+                        let Some((input, commands)) = io else {
+                            let _ = socket
+                                .send(Message::Text(
+                                    serde_json::json!({"type":"error","message":"no active session"})
+                                        .to_string()
+                                        .into(),
+                                ))
+                                .await;
+                            break;
+                        };
+                        if let Err(message) =
+                            handle_client_message(text.as_str(), &input, &commands)
+                        {
                             let _ = socket
                                 .send(Message::Text(
                                     serde_json::json!({"type":"error","message":message})

@@ -281,7 +281,20 @@
           <label>Bitrate
             <input id="opt-bitrate" type="number" min="100" max="100000" placeholder="Auto" title="Higher bitrates preserve more detail and motion. 20000–30000 often helps 1080p.">
           </label>
+          <label>Codec
+            <select id="opt-codec">
+              <option value="h264" selected>H.264 (most compatible)</option>
+              <option value="h265">H.265 / HEVC</option>
+              <option value="h265-hdr">H.265 HDR (experimental)</option>
+            </select>
+          </label>
         </div>
+        <label class="check">
+          <input id="opt-adaptive" type="checkbox" checked>
+          Adaptive bitrate
+        </label>
+        <p class="hint" id="adaptive-hint">After a session with sustained packet loss, the next session starts one step lower. The console only accepts a bitrate when a session starts, so this cannot change mid-stream.</p>
+        <p class="hint" id="codec-support">Checking H.265 support…</p>
         <p class="hint">Resolution and frame rate are requested from the console. Higher bitrates preserve more detail at the cost of network bandwidth.</p>
       </div>
 
@@ -330,27 +343,20 @@
           Motion controls (experimental)
         </label>
         <p class="hint">Uses gamepad pose data when the browser exposes it. Current Chrome does not expose DualSense gyro/accelerometer through the Gamepad API.</p>
-        <details class="legend">
-          <summary>Keyboard and controller</summary>
-          <div class="legend-grid">
-            <span><kbd>WASD</kbd> left stick</span>
-            <span><kbd>Mouse</kbd> right stick (captured)</span>
-            <span><kbd>Left click</kbd> R2</span>
-            <span><kbd>Right click</kbd> L2</span>
-            <span><kbd>Space</kbd> Cross</span>
-            <span><kbd>J</kbd> Moon</span>
-            <span><kbd>K</kbd> Box</span>
-            <span><kbd>L</kbd> Pyramid</span>
-            <span><kbd>Arrows</kbd> D-pad</span>
-            <span><kbd>Q / E</kbd> L1 / R1</span>
-            <span><kbd>Z / C</kbd> L2 / R2</span>
-            <span><kbd>Tab</kbd> Touchpad</span>
-            <span><kbd>Enter</kbd> Options</span>
-            <span><kbd>Backspace</kbd> Share</span>
-            <span><kbd>F / G</kbd> L3 / R3</span>
+
+        <div class="binding-head">
+          <label>Keyboard profile
+            <select id="kb-profile"></select>
+          </label>
+          <div class="binding-actions">
+            <button id="kb-profile-new" class="secondary" type="button">New</button>
+            <button id="kb-profile-delete" class="secondary" type="button">Delete</button>
+            <button id="kb-profile-reset" class="secondary" type="button">Reset</button>
           </div>
-          <p class="hint">A standard gamepad is used automatically. On touch screens, touching the video drives the touchpad.</p>
-        </details>
+        </div>
+        <div id="keyboard-bindings" class="binding-list" aria-label="Keyboard bindings"></div>
+        <p class="hint">Click a key and press a replacement. Bindings are saved per profile in this browser. Mouse: captured pointer = right stick, left click = R2, right click = L2.</p>
+        <p class="hint">A standard gamepad is used automatically. On touch screens, touching the video drives the touchpad.</p>
       </div>
     </div>
 
