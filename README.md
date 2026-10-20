@@ -55,9 +55,10 @@ firmware, artwork, or keys extracted from Sony software by this project. See
 
 ## What works
 
-- Console registration, discovery (SRCH/SRC2/SRC3), and wake-on-LAN; the
-  console type is inferred from the SRC response (with unicast detection for a
-  manually entered IP)
+- Console registration, discovery (SRCH/SRC2/SRC3), and wake-on-LAN. Starting
+  a session automatically wakes a console in Rest Mode and waits for it before
+  connecting; the console type is inferred from the SRC response (with unicast
+  detection for a manually entered IP)
 - Session request with RP-Version negotiation (PS4 8.0/9.0/10.0, PS5 1.0)
 - Ctrl channel: session id, console PIN login, heartbeat, standby (`goto bed`)
 - Takion transport: handshake, RPCrypt/GKCrypt, GMAC, reordering, retransmit
@@ -67,9 +68,17 @@ firmware, artwork, or keys extracted from Sony software by this project. See
   restart and WebSocket reconnection when the link drops
 - Senkusha pre-stream probing on UDP 9297 for MTU and RTT; the measured RTT is
   shown in the stream stats and the MTU sizes the launch spec and fragmentation
-- Gamepad, keyboard/mouse, and touch input; rumble events; latency and packet
-  stats. Latency is the round-trip time to the console: measured by Senkusha at
-  stream start, then updated from the console's own connection-quality reports.
+- Gamepad, keyboard/mouse, and touch input; persistent rumble state; latency
+  and packet stats. Latency is the round-trip time to the console: measured by
+  Senkusha at stream start, then updated from the console's own
+  connection-quality reports.
+- Screenshot and local pause/resume in the player bar. Pausing freezes this
+  view only; the console keeps running.
+- After a console standby disconnect, **Wake and resume** wakes it from Rest
+  Mode and starts a new session without leaving the player view.
+- Volume and mute controls in the player bar, saved per browser; **M** toggles
+  mute while streaming. **Settings → Stream → Audio output** selects a speaker
+  on browsers that support `setSinkId` (Chromium-based).
 - Configurable keyboard binding profiles, saved per browser and switchable
   under **Settings → Input**.
 - Cross-session adaptive bitrate: sustained packet loss steps the next

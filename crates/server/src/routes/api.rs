@@ -17,8 +17,9 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use chiaki_core::discovery;
+use chiaki_core::discovery::HostState;
 use chiaki_core::regist::{self, RegistInfo};
-use chiaki_core::session::{ConnectInfo, Session, SessionOptions};
+use chiaki_core::session::{ConnectInfo, SESSION_PORT, Session, SessionOptions};
 use chiaki_core::target::{Codec, Fps, Resolution, VideoProfile};
 use rtc::peer_connection::configuration::RTCOfferOptions;
 use rtc::peer_connection::sdp::RTCSessionDescription;
@@ -270,6 +271,15 @@ pub async fn detect(
     Ok(Json(found.into()))
 }
 
+async fn resolve_console_ip(host: &str) -> Result<IpAddr, ApiError> {
+    tokio::net::lookup_host((host, 0))
+        .await
+        .map_err(|_| ApiError::bad_request("could not resolve host"))?
+        .find(|addr| addr.is_ipv4())
+        .map(|addr| addr.ip())
+        .ok_or_else(|| ApiError::bad_request("no IPv4 address for host"))
+}
+
 pub async fn wakeup(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -284,16 +294,94 @@ pub async fn wakeup(
     let key = host
         .regist_key_bytes()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let ip: IpAddr = tokio::net::lookup_host((host.host.as_str(), 0))
-        .await
-        .map_err(|_| ApiError::bad_request("could not resolve host"))?
-        .next()
-        .map(|a| a.ip())
-        .ok_or_else(|| ApiError::bad_request("could not resolve host"))?;
+    let ip = resolve_console_ip(&host.host).await?;
     discovery::wakeup(ip, &key, target.is_ps5())
         .await
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+const WAKE_DISCOVERY_TIMEOUT: Duration = Duration::from_millis(700);
+const WAKE_TCP_TIMEOUT: Duration = Duration::from_millis(350);
+const WAKE_POLL_INTERVAL: Duration = Duration::from_millis(750);
+const WAKE_RETRY_INTERVAL: Duration = Duration::from_secs(3);
+const WAKE_TIMEOUT: Duration = Duration::from_secs(30);
+
+async fn console_port_open(ip: IpAddr) -> bool {
+    matches!(
+        timeout(
+            WAKE_TCP_TIMEOUT,
+            tokio::net::TcpStream::connect((ip, SESSION_PORT)),
+        )
+        .await,
+        Ok(Ok(_))
+    )
+}
+
+/// A console that responds to discovery as Ready is awake even if its session
+/// port is temporarily busy. Standby always needs a wake packet; an unknown or
+/// missing discovery state only needs one when the session port is closed.
+fn needs_wake(state: Option<HostState>, port_open: bool) -> bool {
+    match state {
+        Some(HostState::Ready) => false,
+        Some(HostState::Standby) => true,
+        _ => !port_open,
+    }
+}
+
+/// Wake a console in Rest Mode and wait for its session port before the
+/// caller opens a session. An awake console normally returns immediately.
+async fn ensure_console_awake(
+    ip: IpAddr,
+    regist_key: &[u8; 16],
+    ps5: bool,
+) -> Result<(), ApiError> {
+    let discovered = discovery::discover_host(ip, WAKE_DISCOVERY_TIMEOUT)
+        .await
+        .ok()
+        .flatten();
+    let state = discovered.and_then(|host| host.state);
+    let port_open = if matches!(state, Some(HostState::Ready)) {
+        true
+    } else {
+        console_port_open(ip).await
+    };
+    if !needs_wake(state, port_open) {
+        return Ok(());
+    }
+
+    tracing::info!("console at {ip} appears to be asleep; sending wakeup");
+    let deadline = Instant::now() + WAKE_TIMEOUT;
+    let mut last_wake: Option<Instant> = None;
+    loop {
+        let wake_due = last_wake
+            .map(|sent| sent.elapsed() >= WAKE_RETRY_INTERVAL)
+            .unwrap_or(true);
+        if wake_due {
+            if let Err(error) = discovery::wakeup(ip, regist_key, ps5).await {
+                tracing::warn!("automatic wakeup failed: {error}");
+                // If we cannot send a wake packet, let the normal session
+                // request produce its own, faster error.
+                return Ok(());
+            }
+            last_wake = Some(Instant::now());
+        }
+
+        if console_port_open(ip).await {
+            tracing::info!("console at {ip} is awake");
+            return Ok(());
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            break;
+        }
+        tokio::time::sleep(WAKE_POLL_INTERVAL.min(deadline - now)).await;
+    }
+
+    Err(ApiError::bad_request(format!(
+        "console at {ip} did not wake within {} s; check its Rest Mode network settings",
+        WAKE_TIMEOUT.as_secs()
+    )))
 }
 
 #[derive(Debug, Deserialize)]
@@ -376,6 +464,7 @@ pub async fn start_session(
     let morning = host
         .morning_bytes()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let ip = resolve_console_ip(&host.host).await?;
     let resolution = Resolution::parse(&request.resolution)
         .map_err(|_| ApiError::bad_request("bad resolution"))?;
     let fps = match request.fps {
@@ -428,6 +517,8 @@ pub async fn start_session(
             state: adaptive_state,
         });
     }
+
+    ensure_console_awake(ip, &regist_key, target.is_ps5()).await?;
 
     let mut info = ConnectInfo::new(target, host.host.clone(), regist_key, morning, video);
     info.enable_dualsense = request.enable_dualsense;
@@ -779,7 +870,8 @@ pub async fn status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> 
 
 #[cfg(test)]
 mod tests {
-    use super::sdp_accepts_codec;
+    use super::{needs_wake, sdp_accepts_codec};
+    use chiaki_core::discovery::HostState;
     use chiaki_core::target::Codec;
 
     const H264_ANSWER: &str =
@@ -805,5 +897,20 @@ mod tests {
         // rtpmap attributes are still present.
         assert!(!sdp_accepts_codec(REJECTED_VIDEO_WITH_RTPMAP, Codec::H265));
         assert!(sdp_accepts_codec(AUDIO_FIRST, Codec::H264));
+    }
+
+    #[test]
+    fn wake_decision_uses_discovery_state_and_port() {
+        // Awake consoles are never woken, even if the session port is busy.
+        assert!(!needs_wake(Some(HostState::Ready), false));
+        assert!(!needs_wake(Some(HostState::Ready), true));
+        // Standby always wants a wake packet, even if a probe raced with wake.
+        assert!(needs_wake(Some(HostState::Standby), true));
+        assert!(needs_wake(Some(HostState::Standby), false));
+        // Unknown state falls back to the session port probe.
+        assert!(!needs_wake(None, true));
+        assert!(needs_wake(None, false));
+        assert!(!needs_wake(Some(HostState::Unknown), true));
+        assert!(needs_wake(Some(HostState::Unknown), false));
     }
 }

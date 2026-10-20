@@ -543,7 +543,37 @@ body.player-active .topbar { display: none; }
 .status-pill.live { color: var(--ok); border-color: rgba(74, 222, 154, .35); }
 .status-pill.bad { color: var(--danger); border-color: rgba(255, 107, 120, .35); }
 .stats { color: var(--muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.player-actions { display: flex; gap: 6px; }
+.player-actions { display: flex; align-items: center; gap: 6px; }
+.volume-control { display: flex; align-items: center; gap: 6px; }
+.volume-mute {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+}
+.volume-mute svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.volume-mute .volume-x { display: none; }
+.volume-mute.muted .volume-wave { display: none; }
+.volume-mute.muted .volume-x { display: block; }
+.volume-slider {
+  width: 88px;
+  height: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
 .player-btn {
   border: 0;
   background: rgba(255, 255, 255, .08);
@@ -557,6 +587,29 @@ body.player-active .topbar { display: none; }
 .player-btn:hover { background: rgba(255, 255, 255, .14); }
 .player-btn.danger { color: var(--danger); background: rgba(255, 107, 120, .12); }
 .player-btn.danger:hover { background: rgba(255, 107, 120, .2); }
+.resume-panel {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 20;
+  width: min(420px, calc(100% - 32px));
+  padding: 22px;
+  border: 1px solid var(--line-strong);
+  border-radius: 18px;
+  background: rgba(15, 17, 23, .94);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(20px);
+}
+.resume-panel h3 { margin: 0 0 8px; font-size: 18px; }
+.resume-panel p { margin: 0; }
+.resume-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 18px;
+}
 .hint-overlay {
   position: absolute;
   top: 16px;
@@ -1040,8 +1093,10 @@ body.player-active .toast { bottom: 88px; }
   }
   .player-meta { gap: 8px; }
   .player-meta .stats { display: none; }
-  .player-actions { gap: 4px; }
+  .player-actions { gap: 4px; flex-wrap: wrap; justify-content: center; }
   .player-btn { padding: 7px 10px; font-size: 12px; }
+  .volume-mute { width: 30px; height: 30px; padding: 0; }
+  .volume-slider { width: 64px; }
 }
 
 @media (max-width: 520px) {

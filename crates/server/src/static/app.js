@@ -56,6 +56,66 @@ function formatMbps(kbps) {
   const value = kbps / 1000;
   return `${value.toFixed(value % 1 ? 1 : 0)} Mbps`;
 }
+
+const VOLUME_KEY = "setu.volume";
+const MUTE_KEY = "setu.muted";
+const volumeSlider = $("volume-slider");
+const muteBtn = $("mute-btn");
+const audio = { volume: 1, muted: false, lastVolume: 1 };
+
+function saveAudioState() {
+  try {
+    localStorage.setItem(VOLUME_KEY, String(audio.volume));
+    localStorage.setItem(MUTE_KEY, audio.muted ? "1" : "0");
+  } catch {}
+}
+
+function applyAudioState() {
+  video.volume = audio.volume;
+  video.muted = audio.muted;
+  volumeSlider.value = String(Math.round(audio.volume * 100));
+  const silent = audio.muted || audio.volume === 0;
+  muteBtn.classList.toggle("muted", silent);
+  muteBtn.setAttribute("aria-pressed", String(audio.muted));
+  const label = audio.muted ? "Unmute" : "Mute";
+  muteBtn.setAttribute("aria-label", label);
+  muteBtn.title = `${label} (M)`;
+}
+
+function setVolume(value) {
+  audio.volume = Math.max(0, Math.min(1, value));
+  if (audio.volume > 0) {
+    audio.lastVolume = audio.volume;
+    audio.muted = false;
+  }
+  applyAudioState();
+}
+
+function toggleMute() {
+  audio.muted = !audio.muted;
+  if (!audio.muted && audio.volume === 0) {
+    audio.volume = audio.lastVolume || 0.5;
+  }
+  applyAudioState();
+  saveAudioState();
+}
+
+(function initAudio() {
+  try {
+    const storedVolume = parseFloat(localStorage.getItem(VOLUME_KEY) ?? "");
+    if (Number.isFinite(storedVolume)) {
+      audio.volume = Math.max(0, Math.min(1, storedVolume));
+    }
+    audio.muted = localStorage.getItem(MUTE_KEY) === "1";
+  } catch {}
+  audio.lastVolume = audio.volume > 0 ? audio.volume : 1;
+  applyAudioState();
+  volumeSlider.addEventListener("input", () => {
+    setVolume(parseInt(volumeSlider.value, 10) / 100);
+  });
+  volumeSlider.addEventListener("change", saveAudioState);
+  muteBtn.addEventListener("click", toggleMute);
+})();
 const hostsEl = $("hosts");
 const discoveredEl = $("discovered");
 const pinModal = $("pin-modal");
@@ -95,6 +155,13 @@ const state = {
   iceRestarting: false,
   iceAttempts: 0,
   iceGaveUp: false,
+  iceStopTimer: null,
+  hostId: null,
+  paused: false,
+  resumePending: null,
+  resumeTarget: null,
+  rumble: { left: 0, right: 0 },
+  rumbleTimer: null,
   triggerEffectTimer: null,
   triggerEffect: { left: 0, right: 0 },
 };
@@ -1073,6 +1140,47 @@ function showHomeNotice(title, text) {
   toast(text ? `${title} — ${text}` : title, true, 6500);
 }
 
+function showResumePanel(pending) {
+  state.resumeTarget = pending;
+  const text = $("resume-text");
+  text.textContent = pending.reason
+    ? `The console reported: ${pending.reason}. It may be in Rest Mode.`
+    : "The console disconnected. It may be in Rest Mode.";
+  $("wake-resume-btn").disabled = !pending.hostId;
+  $("resume-panel").classList.remove("hidden");
+  setStatus("Disconnected", "bad");
+}
+
+function hideResumePanel() {
+  state.resumeTarget = null;
+  $("resume-panel").classList.add("hidden");
+}
+
+async function resumeFromDisconnect() {
+  const pending = state.resumeTarget;
+  if (!pending?.hostId) return;
+  let host = state.hosts.find((item) => item.id === pending.hostId);
+  if (!host) {
+    await loadHosts();
+    host = state.hosts.find((item) => item.id === pending.hostId);
+  }
+  if (!host) {
+    toast("The console is no longer in the saved list", true);
+    return;
+  }
+  hideResumePanel();
+  await startSession(host);
+}
+
+$("wake-resume-btn").addEventListener("click", () => {
+  resumeFromDisconnect().catch((error) => toast(error.message, true));
+});
+$("resume-back-btn").addEventListener("click", () => {
+  hideResumePanel();
+  showHome();
+  setStatus("Idle", "");
+});
+
 let contextReady = false;
 let lastShownContext = "";
 
@@ -1609,6 +1717,31 @@ $("reg-psn-code").addEventListener("keydown", (event) => {
   }
 });
 $("psn-code-fetch").addEventListener("click", resolvePsnCode);
+$("psn-login-link").addEventListener("click", (event) => {
+  const url = $("psn-login-link").href;
+  if (!url || url.endsWith("#")) return;
+  event.preventDefault();
+  const popup = window.open(url, "setu-psn-login", "popup=yes,width=520,height=760");
+  if (!popup) {
+    const fallback = window.open(url, "_blank");
+    if (!fallback) {
+      toast("Allow popups to open PSN sign-in", true);
+      return;
+    }
+    setPsnCodeStatus("Sign in, then copy the full URL from the sign-in tab and paste it below.");
+    $("reg-psn-code").focus({ preventScroll: true });
+    return;
+  }
+  popup.focus();
+  setPsnCodeStatus("Sign in, then copy the full URL from the popup's address bar and paste it below.");
+  $("reg-psn-code").focus({ preventScroll: true });
+  const timer = setInterval(() => {
+    if (!popup.closed) return;
+    clearInterval(timer);
+    setPsnCodeStatus("Sign-in window closed. Paste the redirect URL or code below.");
+    $("reg-psn-code").focus({ preventScroll: true });
+  }, 1000);
+});
 
 function setPsnLookupStatus(text, kind = "") {
   $("psn-lookup-status").className = "detect-status" + (kind ? " " + kind : "");
@@ -1783,10 +1916,16 @@ async function startSession(host) {
     return;
   }
   state.starting = true;
+  state.hostId = host.id;
+  state.resumePending = null;
+  state.resumeTarget = null;
+  state.paused = false;
+  $("resume-panel").classList.add("hidden");
+  $("pause-btn").textContent = "Pause";
   const epoch = ++state.startEpoch;
   closeAddConsole({ notify: false });
   showPlayer();
-  showOverlay("Connecting…", "Requesting a session from the console.");
+  showOverlay("Connecting…", "Requesting a session. If the console is asleep, Setu wakes it first.");
   showPlayerBar(false);
   setStatus("Starting", "");
   try {
@@ -1846,6 +1985,12 @@ async function startDemo() {
     return;
   }
   state.starting = true;
+  state.hostId = null;
+  state.resumePending = null;
+  state.resumeTarget = null;
+  state.paused = false;
+  $("resume-panel").classList.add("hidden");
+  $("pause-btn").textContent = "Pause";
   const epoch = ++state.startEpoch;
   closeAddConsole({ notify: false });
   showPlayer();
@@ -1940,7 +2085,7 @@ async function setupPeer(offer, sessionId) {
     if (!alive() || !state.stream) return;
     state.stream.addTrack(event.track);
     video.srcObject = state.stream;
-    video.muted = false;
+    applyAudioState();
     applyPicture();
     video.play().catch(() => {
       toast("Click the video to enable audio");
@@ -2011,6 +2156,20 @@ function clearIceRestart() {
     clearTimeout(state.iceTimer);
     state.iceTimer = null;
   }
+  if (state.iceStopTimer) {
+    clearTimeout(state.iceStopTimer);
+    state.iceStopTimer = null;
+  }
+}
+
+function scheduleIceAutoStop(sessionId) {
+  if (state.iceStopTimer) return;
+  state.iceStopTimer = setTimeout(() => {
+    state.iceStopTimer = null;
+    if (state.sessionId !== sessionId) return;
+    toast("Video connection could not be recovered; ending the session.", true);
+    stopSession();
+  }, 1500);
 }
 
 function scheduleIceRestart(pc, sessionId, delay) {
@@ -2018,7 +2177,8 @@ function scheduleIceRestart(pc, sessionId, delay) {
   if (state.iceAttempts >= ICE_RESTART_MAX) {
     state.iceGaveUp = true;
     setStatus("Connection failed", "bad");
-    toast("Could not recover the video connection. Stop and start the session.", true);
+    toast("Could not recover the video connection; ending the session.", true);
+    scheduleIceAutoStop(sessionId);
     return;
   }
   if (state.iceTimer || state.iceRestarting) return;
@@ -2062,8 +2222,9 @@ async function restartIce(pc, sessionId) {
       retry = true;
     } else {
       state.iceGaveUp = true;
-      toast(`Reconnect failed: ${e.message}`, true);
+      toast(`Reconnect failed: ${e.message}; ending the session.`, true);
       setStatus("Connection failed", "bad");
+      scheduleIceAutoStop(sessionId);
     }
   } finally {
     state.iceRestarting = false;
@@ -2147,6 +2308,7 @@ function handleServerEvent(event) {
       toast(event.message, false, 7000);
       break;
     case "remote_disconnect":
+      state.resumePending = { hostId: state.hostId, reason: event.reason };
       toast(`Console disconnected: ${event.reason}`, true);
       setStatus("Remote disconnected", "bad");
       break;
@@ -2164,6 +2326,21 @@ function handleServerEvent(event) {
       if (event.session_id) {
         if (state.serverSessionId && event.session_id !== state.serverSessionId) break;
         if (state.sessionId && event.session_id !== state.sessionId) break;
+      }
+      {
+        const remote = String(event.reason || "").includes("Remote has disconnected");
+        const pending = state.resumePending
+          || (remote && state.hostId
+            ? { hostId: state.hostId, reason: event.reason_string || event.reason }
+            : null);
+        state.resumePending = null;
+        if (pending) {
+          cleanupSession(false).then(() => {
+            showPlayer();
+            showResumePanel(pending);
+          });
+          break;
+        }
       }
       cleanupSession(true);
       if (event.reason === "Stopped") {
@@ -2227,6 +2404,8 @@ $("pin-input").addEventListener("keydown", (event) => {
 });
 
 async function stopSession() {
+  state.resumePending = null;
+  hideResumePanel();
   try {
     await api("/api/session/stop", { method: "POST", body: "{}" });
   } catch (e) {
@@ -2242,6 +2421,17 @@ async function cleanupSession(resetUi) {
   state.streaming = false;
   state.detachedActive = false;
   state.serverSessionId = null;
+  state.paused = false;
+  state.hostId = null;
+  state.resumePending = null;
+  state.resumeTarget = null;
+  $("pause-btn").textContent = "Pause";
+  $("resume-panel").classList.add("hidden");
+  clearRumble();
+  if (state.iceStopTimer) {
+    clearTimeout(state.iceStopTimer);
+    state.iceStopTimer = null;
+  }
   stopDetachedPoll();
   state.keyboard.clear();
   state.mouse = { dx: 0, dy: 0, left: false, right: false, locked: false };
@@ -2565,6 +2755,17 @@ window.addEventListener("keydown", (event) => {
   if (settingsIsOpen()) return;
   if (!pinModal.classList.contains("hidden")) return;
   if (isEditableTarget(event.target)) return;
+  if (
+    event.code === "KeyM"
+    && !isKeyboardBound("KeyM")
+    && !event.ctrlKey
+    && !event.metaKey
+    && !event.altKey
+  ) {
+    event.preventDefault();
+    toggleMute();
+    return;
+  }
   if (isKeyboardBound(event.code) || event.code === "Escape") {
     if (event.code !== "Escape") event.preventDefault();
   }
@@ -2754,8 +2955,75 @@ function ignorePromiseRejection(result) {
   if (result && typeof result.catch === "function") result.catch(() => {});
 }
 
+function captureScreenshot() {
+  if (!video.srcObject || !video.videoWidth || !video.videoHeight) {
+    toast("No video frame to capture", true);
+    return;
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    toast("Could not capture the screenshot", true);
+    return;
+  }
+  try {
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+  } catch {
+    toast("Could not capture the screenshot", true);
+    return;
+  }
+  canvas.toBlob((blob) => {
+    if (!blob) {
+      toast("Could not encode the screenshot", true);
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `setu-${new Date().toISOString().replace(/[:.]/g, "-")}.png`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast("Screenshot saved");
+  }, "image/png");
+}
+
+function setPaused(paused) {
+  if (paused) {
+    video.pause();
+    state.paused = true;
+    $("pause-btn").textContent = "Resume";
+    setStatus("Paused", "");
+    showOverlay("Paused", "The console keeps running. Press Resume to return to live video.");
+    return;
+  }
+  video.play().then(() => {
+    state.paused = false;
+    $("pause-btn").textContent = "Pause";
+    hideOverlay();
+    setStatus(state.streaming ? "Live" : "Connected", state.streaming ? "live" : "");
+  }).catch(() => {
+    toast("Click the video to resume playback", true);
+  });
+}
+
+function togglePause() {
+  if (!video.srcObject || !state.sessionId) return;
+  setPaused(!state.paused);
+}
+
+$("screenshot-btn").addEventListener("click", captureScreenshot);
+$("pause-btn").addEventListener("click", togglePause);
+
 video.addEventListener("click", () => {
   if (!video.srcObject) return;
+  if (state.paused) {
+    setPaused(false);
+    return;
+  }
   if (document.pointerLockElement !== video) {
     ignorePromiseRejection(video.requestPointerLock?.());
   }
@@ -2836,14 +3104,46 @@ video.addEventListener("pointercancel", endTouch);
 
 /* Rumble */
 
-function vibrate(left, right) {
-  const pad = activeGamepad();
-  if (!pad || !pad.vibrationActuator) return;
+function fireRumble() {
+  const actuator = activeGamepad()?.vibrationActuator;
+  if (!actuator) return;
   try {
-    ignorePromiseRejection(pad.vibrationActuator.playEffect("dual-rumble", {
-      duration: 120,
-      strongMagnitude: Math.min(1, (left || 0) / 255),
-      weakMagnitude: Math.min(1, (right || 0) / 255),
+    ignorePromiseRejection(actuator.playEffect("dual-rumble", {
+      // The console sends motor states, not durations. Hold the state with
+      // short overlapping effects until a zero update or cleanup stops it.
+      duration: 160,
+      strongMagnitude: Math.min(1, state.rumble.left / 255),
+      weakMagnitude: Math.min(1, state.rumble.right / 255),
+    }));
+  } catch {}
+}
+
+function vibrate(left, right) {
+  state.rumble = { left: left || 0, right: right || 0 };
+  if (!state.rumble.left && !state.rumble.right) {
+    clearRumble();
+    return;
+  }
+  fireRumble();
+  if (!state.rumbleTimer) {
+    state.rumbleTimer = setInterval(fireRumble, 100);
+  }
+}
+
+function clearRumble() {
+  if (state.rumbleTimer) {
+    clearInterval(state.rumbleTimer);
+    state.rumbleTimer = null;
+  }
+  state.rumble = { left: 0, right: 0 };
+  const actuator = activeGamepad()?.vibrationActuator;
+  if (!actuator) return;
+  try {
+    // Do not call reset(): it would also cancel adaptive-trigger effects.
+    ignorePromiseRejection(actuator.playEffect("dual-rumble", {
+      duration: 1,
+      strongMagnitude: 0,
+      weakMagnitude: 0,
     }));
   } catch {}
 }
@@ -2981,12 +3281,23 @@ const STREAM_OPTION_STORAGE = {
   adaptive: "setu.streamAdaptive",
 };
 
-function browserSupportsHevc() {
+function hevcCapabilities() {
+  const result = { hevc: false, hdr: false };
   try {
     const caps = RTCRtpReceiver.getCapabilities?.("video");
-    return !!caps?.codecs?.some(
-      (codec) => String(codec.mimeType || "").toLowerCase() === "video/h265",
-    );
+    for (const codec of caps?.codecs || []) {
+      if (String(codec.mimeType || "").toLowerCase() !== "video/h265") continue;
+      result.hevc = true;
+      const fmtp = String(codec.sdpFmtpLine || "").replace(/\s+/g, "");
+      if (/(?:^|;)profile-id=2(?:;|$)/.test(fmtp)) result.hdr = true;
+    }
+  } catch {}
+  return result;
+}
+
+function browserReportsHdrDisplay() {
+  try {
+    return window.matchMedia?.("(dynamic-range: high)")?.matches ?? false;
   } catch {
     return false;
   }
@@ -3021,26 +3332,105 @@ function saveStreamOptions() {
   } catch {}
 }
 
+const AUDIO_OUTPUT_KEY = "setu.audioOutput";
+
+function audioOutputSupported() {
+  return typeof video.setSinkId === "function";
+}
+
+async function applyAudioOutput(deviceId) {
+  if (!audioOutputSupported()) return false;
+  try {
+    await video.setSinkId(deviceId || "");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function initAudioOutputs() {
+  const select = $("opt-audio-output");
+  const hint = $("audio-output-hint");
+  if (!select || !hint) return;
+  if (!audioOutputSupported() || !navigator.mediaDevices?.enumerateDevices) {
+    select.disabled = true;
+    hint.textContent = "This browser does not support audio output selection; stream audio uses the system output.";
+    return;
+  }
+
+  let outputs = [];
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    outputs = devices.filter((device) => device.kind === "audiooutput");
+  } catch {}
+  let saved = "";
+  try { saved = localStorage.getItem(AUDIO_OUTPUT_KEY) || ""; } catch {}
+
+  select.disabled = false;
+  select.replaceChildren(new Option("System default", ""));
+  outputs.forEach((device, index) => {
+    select.add(new Option(device.label || `Audio output ${index + 1}`, device.deviceId));
+  });
+  const savedExists = saved && outputs.some((device) => device.deviceId === saved);
+  select.value = savedExists && (await applyAudioOutput(saved)) ? saved : "";
+  if (!select.value) await applyAudioOutput("");
+
+  select.onchange = async () => {
+    const deviceId = select.value;
+    if (await applyAudioOutput(deviceId)) {
+      try { localStorage.setItem(AUDIO_OUTPUT_KEY, deviceId); } catch {}
+      toast(deviceId ? "Audio output changed" : "Using the system audio output");
+    } else {
+      toast("Could not switch audio output", true);
+      select.value = "";
+      await applyAudioOutput("");
+    }
+  };
+
+  hint.textContent = outputs.some((device) => !device.label)
+    ? "Output names can be hidden until the browser grants audio-device access; selection still works by device."
+    : "Choose where stream audio plays.";
+}
+
 (function initStreamOptions() {
   loadStreamOptions();
-  const hevc = browserSupportsHevc();
+  const { hevc, hdr } = hevcCapabilities();
+  const hdrDisplay = browserReportsHdrDisplay();
   const select = $("opt-codec");
   for (const option of select.options) {
     if (option.value === "h264") continue;
-    if (!hevc) {
+    const unavailable = !hevc || (option.value === "h265-hdr" && !hdr);
+    if (unavailable) {
       option.disabled = true;
       option.textContent = `${option.textContent} — unavailable`;
     }
   }
-  if (!hevc) select.value = "h264";
-  $("codec-support").textContent = hevc
-    ? "H.265 uses hardware HEVC decode in this browser. HDR also needs an HDR display and Main10 hardware decode."
-    : "This browser does not expose hardware HEVC over WebRTC, so H.265 is disabled. Chrome 136+ and Safari 18+ can expose it on supported hardware.";
+  if (!hevc) {
+    select.value = "h264";
+  } else if (!hdr && select.value === "h265-hdr") {
+    select.value = "h265";
+  }
+
+  let support;
+  if (!hevc) {
+    support = "This browser does not expose hardware HEVC over WebRTC, so H.265 is disabled. Chrome 136+ and Safari 18+ can expose it on supported hardware.";
+  } else if (!hdr) {
+    support = "H.265 uses hardware HEVC decode in this browser. It did not advertise Main10 HDR support, so HDR is disabled.";
+  } else if (!hdrDisplay) {
+    support = "H.265 and Main10 HDR are available in this browser. This display does not report HDR, so HDR streams will be tone-mapped.";
+  } else {
+    support = "H.265 and Main10 HDR are available in this browser.";
+  }
+  $("codec-support").textContent = support;
+
   for (const id of ["opt-resolution", "opt-fps", "opt-bitrate", "opt-codec", "opt-adaptive"]) {
     $(id).addEventListener("change", saveStreamOptions);
   }
   saveStreamOptions();
 })();
+
+initAudioOutputs();
+navigator.mediaDevices?.addEventListener?.("devicechange", initAudioOutputs);
 
 document.addEventListener("click", (event) => {
   for (const menu of document.querySelectorAll(".row-menu[open]")) {
