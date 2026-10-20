@@ -614,6 +614,10 @@ pub async fn answer(
     // runs with a track that will never display.
     if !sdp_accepts_codec(&request.sdp, codec) {
         let name = if codec.is_h265() { "H.265" } else { "H.264" };
+        tracing::warn!(
+            "answer for session {} rejected: browser did not accept {name}",
+            request.session_id
+        );
         return Err(ApiError::bad_request(format!(
             "this browser did not accept {name}; choose H.264 in Settings → Stream"
         )));
@@ -623,6 +627,10 @@ pub async fn answer(
     peer.set_remote_description(answer)
         .await
         .map_err(|e| ApiError::internal(format!("set remote description failed: {e}")))?;
+    tracing::info!(
+        "answer for session {} accepted ({codec:?})",
+        request.session_id
+    );
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 

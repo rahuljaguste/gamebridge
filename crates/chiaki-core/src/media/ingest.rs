@@ -150,7 +150,10 @@ impl VideoReceiver {
 
         if self.processor.is_flushed() {
             // The frame flushed as soon as its source units arrived; FEC
-            // units and retransmissions can legitimately trail behind.
+            // units and retransmissions can legitimately trail behind. They
+            // must not alter the frame, but they do count as received for
+            // packet stats and the console's congestion feedback.
+            self.processor.note_late_unit(packet);
             return;
         }
         if let Err(error) = self.processor.put_unit(packet, &data) {

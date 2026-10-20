@@ -1826,6 +1826,13 @@ async function startSession(host) {
     startInputLoop();
   } catch (e) {
     if (epoch !== state.startEpoch) return;
+    // A WebRTC setup failure after the start response still owns a console
+    // session. Release it now instead of leaving the manager to time out.
+    if (state.sessionId) {
+      try {
+        await api("/api/session/stop", { method: "POST", body: "{}" });
+      } catch {}
+    }
     await cleanupSession(false);
     showHomeNotice("Could not start", e.message);
   } finally {
@@ -1862,6 +1869,11 @@ async function startDemo() {
     startInputLoop();
   } catch (e) {
     if (epoch !== state.startEpoch) return;
+    if (state.sessionId) {
+      try {
+        await api("/api/session/stop", { method: "POST", body: "{}" });
+      } catch {}
+    }
     await cleanupSession(false);
     showHomeNotice("Could not start demo", e.message);
   } finally {

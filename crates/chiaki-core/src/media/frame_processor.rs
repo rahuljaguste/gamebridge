@@ -154,6 +154,28 @@ impl FrameProcessor {
         self.flushed
     }
 
+    /// Record a unit that arrived after the frame flushed. It must not touch
+    /// frame data, but it still counts as received for packet statistics and
+    /// congestion feedback. Without this, every trailing FEC unit looks lost
+    /// even when the console delivered it.
+    pub fn note_late_unit(&mut self, packet: &AvPacket) {
+        if !self.flushed {
+            return;
+        }
+        let idx = packet.unit_index as usize;
+        if idx >= self.unit_slots.len() || self.unit_slots[idx] != 0 {
+            return;
+        }
+        // The frame is already flushed, so a non-zero marker is enough; it
+        // only prevents counting a duplicate retransmission twice.
+        self.unit_slots[idx] = 1;
+        if idx < self.units_source_expected {
+            self.units_source_received += 1;
+        } else {
+            self.units_fec_received += 1;
+        }
+    }
+
     fn grow_unit_size(&mut self, size: usize) -> Result<()> {
         let stride = size.div_ceil(16) * 16;
         let slots = self.unit_slots.len();
@@ -320,6 +342,35 @@ mod tests {
         // A late unit for a flushed frame is expected and ignored.
         assert!(fp.is_flushed());
         assert!(fp.put_unit(&p1, &unit1).is_ok());
+    }
+
+    #[test]
+    fn late_fec_units_count_as_received_for_packet_stats() {
+        let mut fp = FrameProcessor::new();
+        let unit0 = [0u8, 0u8, 0xaa, 0xbb];
+        let unit1 = [0u8, 0u8, 0xcc];
+        let p0 = packet(0, 0, 3, 1, unit0.len());
+        let p1 = packet(0, 1, 3, 1, unit1.len());
+        fp.alloc_frame(&p0, &unit0).unwrap();
+        fp.put_unit(&p0, &unit0).unwrap();
+        fp.put_unit(&p1, &unit1).unwrap();
+        assert!(fp.flush_possible());
+        let (result, _) = fp.flush();
+        assert_eq!(result, FlushResult::Success);
+        assert_eq!(fp.units_source_received, 2);
+        assert_eq!(fp.units_fec_received, 0);
+
+        // The trailing FEC unit arrives after the frame is complete.
+        let late = packet(0, 2, 3, 1, 3);
+        fp.note_late_unit(&late);
+        assert_eq!(fp.units_fec_received, 1);
+        // A retransmission of the same late unit is not counted twice.
+        fp.note_late_unit(&late);
+        assert_eq!(fp.units_fec_received, 1);
+
+        let stats = PacketStats::new();
+        fp.report_packet_stats(&stats);
+        assert_eq!(stats.get(false), (3, 0));
     }
 
     #[test]
