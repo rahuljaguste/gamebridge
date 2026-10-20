@@ -3,6 +3,32 @@
 All notable changes to Setu are documented here. The project follows semantic
 versioning; it is a Chiaki derivative and remains AGPL-3.0-only.
 
+## [0.5.3] - 2026-10-20
+
+### Fixed
+
+- H.265 offers no longer send an explicit `tx-mode=SRS`. Chrome advertises
+  H.265 with SRST semantics and rejected the video m-line (`m=video 0`) when
+  SRS was offered, so the browser either errored or connected audio-only.
+  `tx-mode` is now omitted, which RFC 7798 defines as SRST; Chrome accepts
+  both Main (`profile-id=1`) and Main10 HDR (`profile-id=2`).
+- A WebRTC setup failure after a successful start response now stops the
+  console session immediately instead of leaving it to the 30-second browser
+  watchdog. The stop is sent only when this browser owns the session.
+- The answer route logs whether the browser accepted or rejected the offered
+  codec, making future codec negotiation failures visible in `server.log`.
+
+## [0.5.2] - 2026-10-20
+
+### Fixed
+
+- Late FEC units that arrive after a frame has flushed are counted as
+  received again for packet statistics. The late-unit handling introduced in
+  0.4.2 correctly stopped them from modifying frame data, but also stopped
+  counting them, so a clean stream could report up to 90% loss, send that
+  figure to the console as congestion feedback, and drive adaptive bitrate
+  down. Frame data is still never modified by late units.
+
 ## [0.5.1] - 2026-10-19
 
 ### Changed

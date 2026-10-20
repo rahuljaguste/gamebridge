@@ -35,10 +35,12 @@ pub const H264_PAYLOAD_TYPE: u8 = 102;
 pub const H265_PAYLOAD_TYPE: u8 = 103;
 pub const OPUS_PAYLOAD_TYPE: u8 = 111;
 const H264_FMTP: &str = "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f";
-/// Main profile; the console's HEVC stream is sent in a single RTP stream.
-const H265_FMTP: &str = "profile-id=1;tier-flag=0;level-asymmetry-allowed=1;tx-mode=SRS";
+/// Main profile. `tx-mode` is omitted because RFC 7798 defaults to SRST,
+/// which Chrome expects; an explicit `tx-mode=SRS` made Chrome reject the
+/// video m-line (port 0) even though it advertises H.265.
+const H265_FMTP: &str = "profile-id=1;tier-flag=0;level-asymmetry-allowed=1";
 /// Main10 profile for HDR.
-const H265_HDR_FMTP: &str = "profile-id=2;tier-flag=0;level-asymmetry-allowed=1;tx-mode=SRS";
+const H265_HDR_FMTP: &str = "profile-id=2;tier-flag=0;level-asymmetry-allowed=1";
 const OPUS_FMTP: &str = "minptime=10;useinbandfec=1";
 
 fn runtime() -> Result<Arc<dyn Runtime>> {
@@ -323,6 +325,7 @@ mod tests {
         let peers = create_peer(events, Codec::H265).await.expect("H.265 peer");
         assert!(peers.offer_sdp.contains("H265/90000"));
         assert!(peers.offer_sdp.contains("profile-id=1"));
+        assert!(!peers.offer_sdp.contains("tx-mode=SRS"));
         assert!(!peers.offer_sdp.contains("H264/90000"));
         let _ = peers.peer.close().await;
 
@@ -332,6 +335,7 @@ mod tests {
             .expect("H.265 HDR peer");
         assert!(peers.offer_sdp.contains("H265/90000"));
         assert!(peers.offer_sdp.contains("profile-id=2"));
+        assert!(!peers.offer_sdp.contains("tx-mode=SRS"));
         let _ = peers.peer.close().await;
     }
 }
