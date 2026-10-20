@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::media::audio::{AudioFormat, AudioFrame, AudioReceiver};
 use crate::media::frame_processor::{FlushResult, FrameProcessor};
-use crate::media::video::scan_annex_b;
+use crate::media::video::{NalScan, scan_annex_b};
 use crate::packet_stats::PacketStats;
 use crate::takion::packet::AvPacket;
 use crate::takion::{TakionCommand, seq16_gt, seq16_lt};
@@ -45,6 +45,17 @@ pub enum MediaEvent {
         height: u32,
         header: Bytes,
     },
+}
+
+/// A frame only carries a usable parameter-set set when every set the decoder
+/// needs is present. Incomplete in-band sets are paired with the cached
+/// stream-info blob by the WebRTC bridge.
+fn has_complete_param_sets(scan: NalScan, codec: Codec) -> bool {
+    if codec.is_h265() {
+        scan.has_vps && scan.has_sps && scan.has_pps
+    } else {
+        scan.has_sps && scan.has_pps
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -208,7 +219,7 @@ impl VideoReceiver {
             width: info.map(|p| p.width).unwrap_or(0),
             height: info.map(|p| p.height).unwrap_or(0),
             is_idr: scan.is_idr,
-            has_param_sets: scan.has_vps || scan.has_sps || scan.has_pps,
+            has_param_sets: has_complete_param_sets(scan, self.codec),
         };
         if video_tx.try_send(frame).is_err() {
             tracing::warn!("video queue full; dropping frame {cur}");
@@ -296,6 +307,60 @@ mod tests {
             data_offset: 0,
             data_len,
         }
+    }
+
+    #[test]
+    fn h265_requires_vps_sps_and_pps_together() {
+        let complete = NalScan {
+            is_idr: true,
+            has_vps: true,
+            has_sps: true,
+            has_pps: true,
+        };
+        assert!(has_complete_param_sets(complete, Codec::H265));
+        assert!(has_complete_param_sets(complete, Codec::H265Hdr));
+
+        for incomplete in [
+            NalScan {
+                has_vps: false,
+                ..complete
+            },
+            NalScan {
+                has_sps: false,
+                ..complete
+            },
+            NalScan {
+                has_pps: false,
+                ..complete
+            },
+        ] {
+            assert!(!has_complete_param_sets(incomplete, Codec::H265));
+        }
+    }
+
+    #[test]
+    fn h264_requires_sps_and_pps_but_not_vps() {
+        let complete = NalScan {
+            is_idr: true,
+            has_vps: false,
+            has_sps: true,
+            has_pps: true,
+        };
+        assert!(has_complete_param_sets(complete, Codec::H264));
+        assert!(!has_complete_param_sets(
+            NalScan {
+                has_sps: false,
+                ..complete
+            },
+            Codec::H264
+        ));
+        assert!(!has_complete_param_sets(
+            NalScan {
+                has_pps: false,
+                ..complete
+            },
+            Codec::H264
+        ));
     }
 
     #[tokio::test]

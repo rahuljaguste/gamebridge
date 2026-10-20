@@ -3,6 +3,63 @@
 All notable changes to Setu are documented here. The project follows semantic
 versioning; it is a Chiaki derivative and remains AGPL-3.0-only.
 
+## [0.5.7] - 2026-10-20
+
+### Added
+
+- **Screenshot** in the player bar saves the current decoded frame as a PNG.
+- **Pause/Resume** freezes or resumes this view locally; the console keeps
+  running, and the player explains that before resuming to live video.
+- After a remote disconnect or console standby, a player-view panel offers
+  **Wake and resume** (reusing the automatic wake preflight) or **Back to
+  consoles**.
+- PSN sign-in opens in a popup and focuses the redirect field when it closes.
+  Sony redirects to a cross-origin page, so the URL still has to be pasted;
+  a popup cannot read it.
+
+### Changed
+
+- Rumble now holds the console's motor state with short overlapping effects
+  until the console reports zero or the session ends, instead of replaying a
+  fixed 120 ms burst per event.
+- When ICE recovery reaches its retry limit, the browser now ends the session
+  automatically after a short grace period instead of waiting for the user or
+  the 30-second watchdog.
+
+## [0.5.6] - 2026-10-20
+
+### Added
+
+- A stream volume slider and mute toggle in the player bar. **M** toggles mute
+  while streaming and is skipped when the user has bound M to a controller
+  action. Volume and mute state persist per browser.
+- **Settings → Stream → Audio output** selects a speaker with
+  `HTMLMediaElement.setSinkId` when the browser supports it (Chromium).
+  The list refreshes on `devicechange`; Safari keeps the system output.
+
+## [0.5.5] - 2026-10-20
+
+### Added
+
+- Starting a session now preflights the console. Discovery `Ready` proceeds
+  immediately; `Standby` or an unreachable session port sends a wakeup packet,
+  then polls TCP 9295 for up to 30 seconds before opening the session. An awake
+  console with the port closed is not woken and still receives the normal
+  session error.
+- The connecting overlay explains that Setu wakes a sleeping console first.
+
+## [0.5.4] - 2026-10-20
+
+### Changed
+
+- HEVC frames are considered self-contained only when VPS, SPS, and PPS are
+  all present; H.264 requires SPS and PPS. Otherwise the bridge prepends the
+  cached stream-info parameter sets before the access unit, so recovery after
+  a gap cannot start with an incomplete set.
+- Stream settings detect HEVC Main10 (`profile-id=2`) separately from H.265
+  itself. HDR is disabled when the browser does not advertise Main10, and the
+  hint notes when the current display does not report HDR and will tone-map.
+
 ## [0.5.3] - 2026-10-20
 
 ### Fixed

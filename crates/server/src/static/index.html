@@ -109,11 +109,33 @@
           <span id="stats" class="stats" title="Round-trip time to the console · packets received · packets lost"></span>
         </div>
         <div class="player-actions">
+          <div class="volume-control">
+            <button id="mute-btn" class="player-btn volume-mute" type="button" aria-label="Mute" aria-pressed="false" title="Mute (M)">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 9v6h4l5 4V5L8 9H4z"/>
+                <path class="volume-wave" d="M16 9a4 4 0 0 1 0 6"/>
+                <path class="volume-wave" d="M18.5 6.5a8 8 0 0 1 0 11"/>
+                <path class="volume-x" d="M16.5 9l5 6M21.5 9l-5 6"/>
+              </svg>
+            </button>
+            <input id="volume-slider" class="volume-slider" type="range" min="0" max="100" step="1" value="100" aria-label="Stream volume" title="Stream volume">
+          </div>
+          <button id="screenshot-btn" class="player-btn" type="button" title="Save the current frame as a PNG">Screenshot</button>
+          <button id="pause-btn" class="player-btn" type="button" title="Pause this view only; the console keeps running">Pause</button>
           <button id="settings-btn" class="player-btn" type="button">Settings</button>
           <button id="resync-btn" class="player-btn" type="button" title="Request a fresh keyframe from the console">Resync</button>
           <button id="rest-btn" class="player-btn" type="button" title="Put the console into Rest Mode">Rest mode</button>
           <button id="fullscreen-btn" class="player-btn" type="button">Fullscreen</button>
           <button id="stop-btn" class="player-btn danger" type="button" disabled>Stop</button>
+        </div>
+      </div>
+
+      <div id="resume-panel" class="resume-panel hidden" role="alertdialog" aria-labelledby="resume-title">
+        <h3 id="resume-title">Console disconnected</h3>
+        <p id="resume-text" class="muted">The console may be in Rest Mode.</p>
+        <div class="resume-actions">
+          <button id="resume-back-btn" class="secondary" type="button">Back to consoles</button>
+          <button id="wake-resume-btn" class="primary" type="button">Wake and resume</button>
         </div>
       </div>
     </div>
@@ -288,7 +310,13 @@
               <option value="h265-hdr">H.265 HDR (experimental)</option>
             </select>
           </label>
+          <label>Audio output
+            <select id="opt-audio-output">
+              <option value="">System default</option>
+            </select>
+          </label>
         </div>
+        <p class="hint" id="audio-output-hint">Choose where stream audio plays. Output selection is available in Chromium-based browsers; Safari uses the system output.</p>
         <label class="check">
           <input id="opt-adaptive" type="checkbox" checked>
           Adaptive bitrate
