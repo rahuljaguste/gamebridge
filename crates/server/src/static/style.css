@@ -484,6 +484,18 @@ body.player-active .topbar { display: none; }
 
 .demo-btn { align-self: flex-start; }
 .legal { color: var(--muted); font-size: 11px; line-height: 1.6; text-align: center; margin-top: auto; padding-top: 12px; }
+.legal a,
+.settings-legal a,
+.touch-menu-note a { color: var(--accent); text-decoration: none; }
+.legal a:hover,
+.settings-legal a:hover,
+.touch-menu-note a:hover { text-decoration: underline; }
+.settings-legal {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+}
 
 /* ── Player ────────────────────────────────────────────────────────────── */
 .player-view { flex: 1; min-height: 0; }

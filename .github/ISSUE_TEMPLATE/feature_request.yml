@@ -1,0 +1,42 @@
+name: Feature request
+description: Propose a focused improvement for GameBridge
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What are you trying to do, and what is missing today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful version of the change.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing workarounds, related projects, or other designs.
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Primary platform
+      options:
+        - Host / server
+        - Desktop browser
+        - Phone or tablet
+        - Multiple platforms
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: I understand that protocol/platform support depends on lawful access, testing hardware, and maintainer time.
+          required: true

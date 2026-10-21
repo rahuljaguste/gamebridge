@@ -3,6 +3,16 @@
 All notable changes to GameBridge are documented here. The project follows
 semantic versioning; it is a Chiaki derivative and remains AGPL-3.0-only.
 
+## [0.8.3] - 2026-10-21
+
+### Documentation
+
+- Link the project source and AGPL-3.0-only license from the home screen,
+  Settings drawer, and touch stream menu so network users can find the
+  Corresponding Source.
+- Add bug-report and feature-request issue templates, a pull-request checklist,
+  and weekly Dependabot update configuration for Cargo and GitHub Actions.
+
 ## [0.8.2] - 2026-10-21
 
 ### Security
