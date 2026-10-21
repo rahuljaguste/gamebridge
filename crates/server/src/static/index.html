@@ -57,6 +57,10 @@
 <main class="app">
   <section id="home-view" class="home-view">
     <div class="home-inner">
+      <div id="insecure-banner" class="insecure-banner hidden" role="status">
+        <span>This page is not served over HTTPS. Phones and tablets may block gamepads, motion sensors, or WebRTC on non-local origins. You can continue; HTTPS or localhost is recommended for full support.</span>
+        <button id="insecure-dismiss" class="secondary small" type="button">Dismiss</button>
+      </div>
       <header class="home-header">
         <div class="home-header-row">
           <div class="home-heading">
@@ -110,6 +114,79 @@
 
       <div id="hint" class="hint-overlay hidden">Click the video to capture the mouse · Esc releases</div>
 
+      <div id="touch-controls" class="touch-controls hidden" role="group" aria-label="On-screen controller" aria-hidden="true">
+        <div class="tc-shoulders tc-shoulders-left">
+          <button class="tc-control tc-trigger" type="button" data-trigger="l2" aria-label="L2 trigger">L2</button>
+          <button class="tc-control tc-bumper" type="button" data-button="l1" aria-label="L1">L1</button>
+        </div>
+        <div class="tc-shoulders tc-shoulders-right">
+          <button class="tc-control tc-trigger" type="button" data-trigger="r2" aria-label="R2 trigger">R2</button>
+          <button class="tc-control tc-bumper" type="button" data-button="r1" aria-label="R1">R1</button>
+        </div>
+        <div class="tc-menu" role="group" aria-label="System buttons">
+          <button class="tc-control tc-menu-btn" type="button" data-button="share" aria-label="Share">Share</button>
+          <button class="tc-control tc-menu-btn tc-ps" type="button" data-button="ps" aria-label="PS button">PS</button>
+          <button class="tc-control tc-menu-btn" type="button" data-button="options" aria-label="Options">Options</button>
+          <button id="tc-recenter" class="tc-control tc-recenter" type="button" aria-label="Recenter motion">Recenter</button>
+        </div>
+
+        <div id="tc-stick-left" class="tc-stick tc-stick-left" role="group" aria-label="Left stick">
+          <span class="tc-stick-ring" aria-hidden="true"></span>
+          <span class="tc-stick-knob" aria-hidden="true"></span>
+        </div>
+        <div id="tc-dpad" class="tc-dpad" role="group" aria-label="D-pad">
+          <button class="tc-dpad-btn tc-dpad-up" type="button" data-dpad="up" aria-label="D-pad up">▲</button>
+          <button class="tc-dpad-btn tc-dpad-down" type="button" data-dpad="down" aria-label="D-pad down">▼</button>
+          <button class="tc-dpad-btn tc-dpad-left" type="button" data-dpad="left" aria-label="D-pad left">◀</button>
+          <button class="tc-dpad-btn tc-dpad-right" type="button" data-dpad="right" aria-label="D-pad right">▶</button>
+          <span class="tc-dpad-hub" aria-hidden="true"></span>
+        </div>
+        <div id="tc-stick-right" class="tc-stick tc-stick-right" role="group" aria-label="Right stick">
+          <span class="tc-stick-ring" aria-hidden="true"></span>
+          <span class="tc-stick-knob" aria-hidden="true"></span>
+        </div>
+        <div class="tc-face" role="group" aria-label="Face buttons">
+          <button class="tc-control tc-face-btn tc-face-triangle" type="button" data-button="pyramid" aria-label="Triangle">△</button>
+          <button class="tc-control tc-face-btn tc-face-cross" type="button" data-button="cross" aria-label="Cross">✕</button>
+          <button class="tc-control tc-face-btn tc-face-square" type="button" data-button="box" aria-label="Square">□</button>
+          <button class="tc-control tc-face-btn tc-face-circle" type="button" data-button="moon" aria-label="Circle">○</button>
+        </div>
+      </div>
+      <button id="touch-menu-btn" class="touch-menu-btn hidden" type="button" aria-label="Open stream menu" aria-haspopup="dialog" aria-controls="touch-menu" aria-expanded="false">Menu</button>
+      <div id="touch-menu" class="touch-menu hidden" role="dialog" aria-modal="true" aria-labelledby="touch-menu-title" aria-hidden="true">
+        <div id="touch-menu-backdrop" class="touch-menu-backdrop" aria-hidden="true"></div>
+        <div class="touch-menu-panel">
+          <div class="touch-menu-head">
+            <div>
+              <p class="eyebrow">GameBridge</p>
+              <h3 id="touch-menu-title">Stream menu</h3>
+            </div>
+            <button id="touch-menu-close" class="touch-menu-close" type="button">Done</button>
+          </div>
+          <div class="touch-menu-status">
+            <span id="touch-menu-state" class="status-pill">Live</span>
+            <span id="touch-menu-stats" class="stats"></span>
+          </div>
+          <label class="touch-menu-volume" for="touch-menu-volume">
+            <span>Volume</span>
+            <input id="touch-menu-volume" type="range" min="0" max="100" step="1" value="100">
+          </label>
+          <div class="touch-menu-grid">
+            <button class="touch-menu-action" type="button" data-menu-action="pause">Pause</button>
+            <button class="touch-menu-action" type="button" data-menu-action="mute">Mute</button>
+            <button class="touch-menu-action" type="button" data-menu-action="fullscreen">Fullscreen</button>
+            <button class="touch-menu-action" type="button" data-menu-action="screenshot">Screenshot</button>
+            <button class="touch-menu-action" type="button" data-menu-action="resync">Resync</button>
+            <button class="touch-menu-action" type="button" data-menu-action="settings">Settings</button>
+            <button class="touch-menu-action" type="button" data-menu-action="controls">Hide controls</button>
+            <button class="touch-menu-action" type="button" data-menu-action="rest">Rest mode</button>
+            <button class="touch-menu-action danger" type="button" data-menu-action="stop">Stop stream</button>
+          </div>
+          <p class="touch-menu-note">The console keeps running while this menu is open.</p>
+        </div>
+      </div>
+      <div id="rotate-hint" class="rotate-hint hidden" role="status" aria-live="polite">Rotate your device to landscape for on-screen controls. The stream keeps running.</div>
+
       <div id="player-bar" class="player-bar hidden">
         <div class="player-meta">
           <span id="conn-status" class="status-pill" role="status" aria-live="polite">Idle</span>
@@ -129,10 +206,11 @@
           </div>
           <button id="screenshot-btn" class="player-btn" type="button" title="Save the current frame as a PNG">Screenshot</button>
           <button id="pause-btn" class="player-btn" type="button" title="Pause this view only; the console keeps running">Pause</button>
+          <button id="touch-toggle-btn" class="player-btn hidden" type="button" aria-pressed="false" title="Show on-screen touch controls">Controls</button>
           <button id="settings-btn" class="player-btn" type="button">Settings</button>
           <button id="resync-btn" class="player-btn" type="button" title="Request a fresh keyframe from the console">Resync</button>
           <button id="rest-btn" class="player-btn" type="button" title="Put the console into Rest Mode">Rest mode</button>
-          <button id="fullscreen-btn" class="player-btn" type="button">Fullscreen</button>
+          <button id="fullscreen-btn" class="player-btn" type="button" title="Enter fullscreen" aria-label="Enter fullscreen">Fullscreen</button>
           <button id="stop-btn" class="player-btn danger" type="button" disabled>Stop</button>
         </div>
       </div>
@@ -374,10 +452,29 @@
         </label>
         <p class="hint">May make the console's streaming server unstable after repeated sessions.</p>
         <label class="check">
+          <input id="opt-touch-controls" type="checkbox">
+          Touch controls
+        </label>
+        <p class="hint">Shows an on-screen controller on touch screens. The video remains the touchpad; empty areas still send touchpad touches.</p>
+        <label class="check">
           <input id="opt-motion" type="checkbox" checked>
           Motion controls (experimental)
         </label>
-        <p class="hint">Uses gamepad pose data when the browser exposes it. Current Chrome does not expose DualSense gyro/accelerometer through the Gamepad API.</p>
+        <p class="hint">Uses phone/tablet gyro and accelerometer when available, otherwise gamepad pose data. iPhone and iPad ask for sensor permission when you enable it.</p>
+        <div class="motion-row">
+          <span id="motion-status" class="hint" role="status" aria-live="polite">Motion sensors are off.</span>
+          <button id="motion-enable-btn" class="secondary small hidden" type="button">Enable sensors</button>
+          <button id="motion-recenter-btn" class="secondary small" type="button" disabled>Recenter</button>
+        </div>
+        <p id="motion-secure-hint" class="hint hidden">Motion sensors usually require HTTPS or localhost. Plain HTTP origins may be denied sensor access.</p>
+
+        <div id="mac-ps-setting" class="hidden">
+          <label class="check">
+            <input id="opt-mac-ps" type="checkbox">
+            Reserve the controller PS button for GameBridge
+          </label>
+          <p class="hint">Disables the macOS Games app shortcut for the Home/PS button. This changes a system-wide setting and may require logging out and back in. On macOS 27, per-app Home Button Overrides in System Settings are an alternative.</p>
+        </div>
 
         <div class="binding-head">
           <label>Keyboard profile
@@ -438,6 +535,7 @@
 </div>
 
 <div id="toast" class="toast hidden" role="alert" aria-live="assertive" title="Dismiss"></div>
+<script src="/motion-math.js"></script>
 <script type="module" src="/app.js"></script>
 </body>
 </html>

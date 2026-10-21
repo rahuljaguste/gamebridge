@@ -868,6 +868,102 @@ pub async fn status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> 
     })
 }
 
+#[derive(Debug, Serialize)]
+pub struct GameControllerPreference {
+    supported: bool,
+    use_ps_button: bool,
+    requires_logout: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GameControllerPreferenceRequest {
+    use_ps_button: bool,
+}
+
+#[cfg(target_os = "macos")]
+const GAME_CONTROLLER_DOMAIN: &str = "com.apple.GameController";
+#[cfg(target_os = "macos")]
+const MENU_LONG_PRESS_KEY: &str = "bluetoothPrefsMenuLongPressAction";
+
+#[cfg(target_os = "macos")]
+fn read_game_controller_preference() -> GameControllerPreference {
+    let use_ps_button = std::process::Command::new("/usr/bin/defaults")
+        .args(["read", GAME_CONTROLLER_DOMAIN, MENU_LONG_PRESS_KEY])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .is_some_and(|output| String::from_utf8_lossy(&output.stdout).trim() == "0");
+    GameControllerPreference {
+        supported: true,
+        use_ps_button,
+        requires_logout: true,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_game_controller_preference() -> GameControllerPreference {
+    GameControllerPreference {
+        supported: false,
+        use_ps_button: false,
+        requires_logout: false,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn write_game_controller_preference(use_ps_button: bool) -> Result<(), ApiError> {
+    let output = if use_ps_button {
+        std::process::Command::new("/usr/bin/defaults")
+            .args([
+                "write",
+                GAME_CONTROLLER_DOMAIN,
+                MENU_LONG_PRESS_KEY,
+                "-integer",
+                "0",
+            ])
+            .output()
+    } else {
+        std::process::Command::new("/usr/bin/defaults")
+            .args(["delete", GAME_CONTROLLER_DOMAIN, MENU_LONG_PRESS_KEY])
+            .output()
+    };
+    match output {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => {
+            let detail = String::from_utf8_lossy(&output.stderr);
+            let detail = detail.trim();
+            Err(ApiError::internal(if detail.is_empty() {
+                format!(
+                    "macOS rejected the controller shortcut change ({})",
+                    output.status
+                )
+            } else {
+                format!("macOS rejected the controller shortcut change: {detail}")
+            }))
+        }
+        Err(error) => Err(ApiError::internal(format!(
+            "could not run defaults: {error}"
+        ))),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn write_game_controller_preference(_use_ps_button: bool) -> Result<(), ApiError> {
+    Err(ApiError::bad_request(
+        "controller shortcut settings are only available on macOS",
+    ))
+}
+
+pub async fn game_controller_preference() -> Json<GameControllerPreference> {
+    Json(read_game_controller_preference())
+}
+
+pub async fn set_game_controller_preference(
+    Json(request): Json<GameControllerPreferenceRequest>,
+) -> Result<Json<GameControllerPreference>, ApiError> {
+    write_game_controller_preference(request.use_ps_button)?;
+    Ok(Json(read_game_controller_preference()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{needs_wake, sdp_accepts_codec};

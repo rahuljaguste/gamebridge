@@ -37,8 +37,11 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
-      - name: JavaScript syntax
-        run: node --check crates/server/src/static/app.js
+      - name: JavaScript syntax and motion math
+        run: |
+          node --check crates/server/src/static/app.js
+          node --check crates/server/src/static/motion-math.js
+          node --test tools/test_motion_math.js
 
       - name: License inventory
         run: python3 tools/gen_licenses.py --check

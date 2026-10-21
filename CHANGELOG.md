@@ -3,6 +3,139 @@
 All notable changes to GameBridge are documented here. The project follows
 semantic versioning; it is a Chiaki derivative and remains AGPL-3.0-only.
 
+## [0.8.1] - 2026-10-21
+
+### Documentation
+
+- Added a high-level runtime topology flowchart to the README as a PNG, with
+  an editable SVG source. It covers browsers, the GameBridge process,
+  chiaki-core, the console link, optional PSN services, and the future
+  multi-source adapter boundary. The existing module layout is retained as the
+  code-layout reference.
+
+## [0.8.0] - 2026-10-21
+
+### Added
+
+- A dedicated **Menu** button on touch devices opens a stream menu with
+  pause/resume, volume, mute, screenshot, resync, settings, fullscreen,
+  controls on/off, rest mode, and stop. The menu lives inside the video
+  container, so it works in fullscreen, and its backdrop prevents accidental
+  controller input while it is open.
+
+### Changed
+
+- Touch streaming no longer shows the desktop player bar. This removes the
+  bar-versus-controller overlap in fullscreen and makes every action reachable
+  from the touch menu instead of a clipped horizontal strip.
+
+## [0.7.3] - 2026-10-21
+
+### Fixed
+
+- Releasing a video touchpad contact outside the video no longer leaves a
+  phantom finger held down when the browser drops pointer capture. Touchpad
+  contacts are cleared by the same document-level pointer cleanup used by the
+  virtual controller.
+
+### Changed
+
+- Share, PS, Options, and Recenter now use 44px-tall touch targets. The touch
+  player bar moves down slightly to preserve the gap above it.
+- The touch player bar shows a **Swipe →** hint while its actions overflow
+  horizontally, making the off-screen buttons discoverable.
+
+## [0.7.2] - 2026-10-21
+
+### Fixed
+
+- Touch sticks and the D-pad now read target-local pointer coordinates and
+  fall back to drag deltas when the browser reports client coordinates in a
+  different viewport space. This fixes Android Chrome fullscreen, where every
+  stick direction previously resolved to up.
+
+## [0.7.1] - 2026-10-21
+
+### Fixed
+
+- The player bar no longer covers the on-screen sticks or face buttons on
+  phones and tablets. It docks at the top centre while the virtual controller
+  is active, stays within the viewport, and scrolls horizontally. Transient
+  toasts are moved clear of the bottom control clusters so they cannot
+  intercept joystick or button touches.
+- Touch sticks and the D-pad now follow document-level pointer events, so
+  dragging outside the control or a browser that drops pointer capture no
+  longer freezes or leaves the movement stuck. Release events are likewise
+  guaranteed to clear the axis and button state.
+
+## [0.7.0] - 2026-10-21
+
+### Added
+
+- Full on-screen controller for phones and tablets: left/right sticks, D-pad,
+  face buttons, L1/R1/L2/R2, Options/Share/PS, and motion Recenter. The video
+  remains a two-finger touchpad, and empty areas still send touchpad touches.
+- Phone/tablet motion input from `DeviceMotion`/`DeviceOrientation`, including
+  sensor permission handling, screen-orientation mapping, recenter, stale-data
+  timeout, and Gamepad pose fallback.
+- Touch controls auto-show on touch devices, with a persisted **Settings →
+  Input** toggle and a player-bar show/hide button.
+- Landscape-first touch UI with a non-blocking portrait rotate hint.
+- An insecure-origin warning for plain HTTP on non-local origins, explaining
+  that phones and tablets may block WebRTC, Gamepad, and motion sensors.
+
+### Changed
+
+- The motion setting is persisted and now covers both phone sensors and
+  Gamepad pose.
+- The player-bar auto-hide timer no longer hides while touch controls are held,
+  and opening Settings exits fullscreen so the mobile toggles are reachable.
+- Permissions-Policy explicitly allows accelerometer, gyroscope, and
+  magnetometer for the page itself.
+- The Host/Origin guard now accepts an HTTPS origin with the default port 443
+  when the proxy preserves a port-less Host header.
+
+### Documentation
+
+- Added phone/tablet guidance, including the secure-context requirement for
+  full WebRTC, Gamepad, and sensor support.
+
+## [0.6.4] - 2026-10-21
+
+### Added
+
+- The server startup banner now prints reachable LAN URLs and a scannable QR
+  code for the first address when bound to a LAN address or `0.0.0.0`. A
+  loopback bind prints the command needed to enable LAN access instead.
+
+## [0.6.3] - 2026-10-21
+
+### Added
+
+- On macOS, **Settings → Input** can reserve the controller PS/Home button for
+  GameBridge by disabling the system Games app shortcut. The change is
+  system-wide and may require logging out and back in. The toggle is shown only
+  when the server runs on macOS.
+
+## [0.6.2] - 2026-10-21
+
+### Fixed
+
+- The player's fullscreen button now changes to **Exit fullscreen** while
+  fullscreen is active, and returns to **Fullscreen** when it closes.
+
+### Documentation
+
+- Added a macOS troubleshooting note for the PS/Home button being consumed by
+  the Games app before the browser receives it.
+
+## [0.6.1] - 2026-10-21
+
+### Fixed
+
+- Leaving or stopping a stream now exits browser fullscreen, rather than
+  leaving the home screen in fullscreen mode.
+
 ## [0.6.0] - 2026-10-20
 
 ### Changed

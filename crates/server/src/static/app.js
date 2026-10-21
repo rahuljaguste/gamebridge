@@ -77,6 +77,41 @@ function formatMbps(kbps) {
   } catch {}
 })();
 
+const TOUCH_CONTROLS_KEY = "gamebridge.touchControls";
+const MOTION_KEY = "gamebridge.motion";
+const INSECURE_DISMISS_KEY = "gamebridge.insecureWarningDismissed";
+const TOUCH_TAP_MIN_MS = 48;
+const MOTION_STALE_MS = 500;
+const MotionMath = window.GameBridgeMotion;
+
+const TOUCH_BUTTON_BITS = {
+  cross: B.CROSS,
+  moon: B.MOON,
+  box: B.BOX,
+  pyramid: B.PYRAMID,
+  l1: B.L1,
+  r1: B.R1,
+  options: B.OPTIONS,
+  share: B.SHARE,
+  ps: B.PS,
+};
+const TOUCH_DPAD_BITS = {
+  up: B.DPAD_UP,
+  down: B.DPAD_DOWN,
+  left: B.DPAD_LEFT,
+  right: B.DPAD_RIGHT,
+};
+const TOUCH_MENU_SOURCE = {
+  pause: "pause-btn",
+  mute: "mute-btn",
+  fullscreen: "fullscreen-btn",
+  screenshot: "screenshot-btn",
+  resync: "resync-btn",
+  settings: "settings-btn",
+  rest: "rest-btn",
+  stop: "stop-btn",
+};
+
 const VOLUME_KEY = "gamebridge.volume";
 const MUTE_KEY = "gamebridge.muted";
 const volumeSlider = $("volume-slider");
@@ -168,6 +203,36 @@ const state = {
   rumbleTimer: null,
   triggerEffectTimer: null,
   triggerEffect: { left: 0, right: 0 },
+  touch: {
+    enabled: false,
+    pointers: new Map(),
+    latches: new Map(),
+    left: { x: 0, y: 0, active: false, pointerId: null, origin: null },
+    right: { x: 0, y: 0, active: false, pointerId: null, origin: null },
+    dpad: { up: false, down: false, left: false, right: false, pointerId: null, rect: null, origin: null },
+    triggers: {
+      l2: { active: false, pointerId: null, until: 0 },
+      r2: { active: false, pointerId: null, until: 0 },
+    },
+  },
+  motion: {
+    enabled: true,
+    permission: "unknown",
+    sensorsAttached: false,
+    lastEventAt: 0,
+    rotationRate: { alpha: 0, beta: 0, gamma: 0 },
+    acceleration: { x: 0, y: 9.80665, z: 0 },
+    alpha: 0,
+    beta: 0,
+    gamma: 0,
+    recenterQuat: [0, 0, 0, 1],
+    hasOrientation: false,
+  },
+  ui: {
+    touchCapable: false,
+    portrait: false,
+    insecure: false,
+  },
 };
 
 (function initAudio() {
@@ -1031,7 +1096,23 @@ if (typeof ResizeObserver === "function") {
 } else {
   window.addEventListener("resize", scheduleSizeDirty);
 }
-document.addEventListener("fullscreenchange", () => { sharp.sizeDirty = true; });
+function updateFullscreenButton() {
+  const button = $("fullscreen-btn");
+  if (!button) return;
+  const active = Boolean(document.fullscreenElement);
+  button.textContent = active ? "Exit fullscreen" : "Fullscreen";
+  button.title = active ? "Exit fullscreen" : "Enter fullscreen";
+  button.setAttribute("aria-label", active ? "Exit fullscreen" : "Enter fullscreen");
+}
+
+document.addEventListener("fullscreenchange", () => {
+  sharp.sizeDirty = true;
+  updateFullscreenButton();
+  resetTouchControls();
+  updateOrientationState();
+  if (touchMenuIsOpen()) updateTouchMenuState();
+});
+updateFullscreenButton();
 
 sharpCanvas.addEventListener("webglcontextlost", (event) => {
   event.preventDefault();
@@ -1147,6 +1228,8 @@ function showPlayer() {
   document.body.classList.add("player-active");
   hideContextToast();
   updateContextMessage();
+  syncTouchControlsUi();
+  updateOrientationState();
 }
 
 function showHome() {
@@ -1154,6 +1237,13 @@ function showHome() {
   $("player-view").classList.add("hidden");
   document.body.classList.remove("player-active");
   hidePlayerBar();
+  closeTouchMenu({ restoreFocus: false });
+  resetTouchControls();
+  stopMotionSensors();
+  rotateHintEl.classList.add("hidden");
+  updateInsecureBanner();
+  syncTouchControlsUi();
+  updateMotionStatus();
   updateContextMessage();
 }
 
@@ -1250,15 +1340,25 @@ function hideContextToast() {
 let playerBarTimer = null;
 
 function showPlayerBar(autoHide = true) {
+  // Touch devices use the dedicated Menu button and its modal sheet. Keeping
+  // the desktop player bar off-screen means it can never overlap a stick,
+  // including after a fullscreen resize.
+  if ((state.ui.touchCapable || state.touch.enabled) && state.streaming) {
+    hidePlayerBar();
+    return;
+  }
   if (document.body.classList.contains("player-active")) {
     $("player-bar").classList.remove("hidden");
   }
   clearTimeout(playerBarTimer);
   if (autoHide && state.streaming) {
     playerBarTimer = setTimeout(() => {
-      if (!settingsIsOpen()) {
-        $("player-bar").classList.add("hidden");
+      if (settingsIsOpen()) return;
+      if (state.touch.pointers.size > 0 || state.touch.latches.size > 0) {
+        showPlayerBar(true);
+        return;
       }
+      $("player-bar").classList.add("hidden");
     }, 3000);
   }
 }
@@ -1276,6 +1376,10 @@ function settingsIsOpen() {
 
 function openSettings(tab = "stream") {
   if (addIsOpen()) closeAddConsole({ restoreFocus: false, notify: false });
+  if (document.fullscreenElement) {
+    ignorePromiseRejection(document.exitFullscreen?.());
+  }
+  resetTouchControls();
   hideContextToast();
   const overlay = $("settings-overlay");
   if (!overlay.classList.contains("open")) {
@@ -1288,6 +1392,8 @@ function openSettings(tab = "stream") {
   }
   setSettingsTab(tab);
   clearTimeout(playerBarTimer);
+  syncTouchControlsUi();
+  updateMotionStatus();
   $("settings-drawer").focus({ preventScroll: true });
   updateContextMessage();
 }
@@ -1303,6 +1409,8 @@ function closeSettings() {
     settingsReturnFocus.focus({ preventScroll: true });
   }
   settingsReturnFocus = null;
+  syncTouchControlsUi();
+  updateMotionStatus();
   if (document.body.classList.contains("player-active")) showPlayerBar();
   updateContextMessage();
 }
@@ -1936,6 +2044,7 @@ async function startSession(host) {
     toast("A session is already active", true);
     return;
   }
+  primeMotionForStart();
   state.starting = true;
   state.hostId = host.id;
   state.resumePending = null;
@@ -2005,6 +2114,7 @@ async function startDemo() {
     toast("A session is already active", true);
     return;
   }
+  primeMotionForStart();
   state.starting = true;
   state.hostId = null;
   state.resumePending = null;
@@ -2123,7 +2233,13 @@ async function setupPeer(offer, sessionId) {
       setStatus("Live", "live");
       state.streaming = true;
       hintOverlay.classList.add("hidden");
-      showPlayerBar();
+      syncTouchControlsUi();
+      startMotionIfEnabled();
+      if (state.touch.enabled && state.ui.touchCapable) {
+        hidePlayerBar();
+      } else {
+        showPlayerBar();
+      }
     } else if (s === "failed") {
       setStatus(s, "bad");
       showPlayerBar();
@@ -2446,6 +2562,7 @@ async function cleanupSession(resetUi) {
   state.hostId = null;
   state.resumePending = null;
   state.resumeTarget = null;
+  closeTouchMenu({ restoreFocus: false });
   $("pause-btn").textContent = "Pause";
   $("resume-panel").classList.add("hidden");
   clearRumble();
@@ -2457,12 +2574,20 @@ async function cleanupSession(resetUi) {
   state.keyboard.clear();
   state.mouse = { dx: 0, dy: 0, left: false, right: false, locked: false };
   state.touches.clear();
+  resetTouchControls();
+  stopMotionSensors();
+  state.motion.recenterQuat = [0, 0, 0, 1];
   state.lastInputJson = "";
   state.lastInputAt = 0;
   pinModal.classList.add("hidden");
   loginPinReveal.reset();
   if (document.pointerLockElement) {
     ignorePromiseRejection(document.exitPointerLock());
+  }
+  // Leaving the stream should restore the page instead of leaving the home
+  // screen stuck in fullscreen.
+  if (document.fullscreenElement) {
+    ignorePromiseRejection(document.exitFullscreen?.());
   }
   if (state.inputTimer) {
     clearInterval(state.inputTimer);
@@ -2795,7 +2920,28 @@ window.addEventListener("keydown", (event) => {
 window.addEventListener("keyup", (event) => {
   state.keyboard.delete(event.code);
 });
-window.addEventListener("blur", () => state.keyboard.clear());
+window.addEventListener("blur", () => {
+  state.keyboard.clear();
+  resetTouchControls();
+  if (state.streaming) sendInput(true);
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    resetTouchControls();
+    state.touches.clear();
+    stopMotionSensors();
+  } else if (state.streaming) {
+    startMotionIfEnabled();
+    sendInput(true);
+  }
+});
+
+window.addEventListener("pagehide", () => {
+  resetTouchControls();
+  state.touches.clear();
+  stopMotionSensors();
+});
 
 // Form controls keep all native editing keys (Backspace, Delete, arrows,
 // Tab, Space, Enter). Stop these events before any gamepad shortcut sees
@@ -2810,6 +2956,7 @@ document.querySelectorAll("input, textarea, select").forEach((element) => {
 function startInputLoop() {
   if (state.inputTimer) clearInterval(state.inputTimer);
   state.inputTimer = setInterval(sendInput, 16);
+  startMotionIfEnabled();
 }
 
 function deadzone(value) {
@@ -2844,12 +2991,532 @@ function gamepadMotion(pad) {
   };
 }
 
-function sendInput() {
+const touchControlsEl = $("touch-controls");
+const leftStickEl = $("tc-stick-left");
+const rightStickEl = $("tc-stick-right");
+const dpadEl = $("tc-dpad");
+const rotateHintEl = $("rotate-hint");
+const touchMenuBtn = $("touch-menu-btn");
+const touchMenuEl = $("touch-menu");
+const touchMenuVolume = $("touch-menu-volume");
+const portraitMedia = matchMedia("(orientation: portrait)");
+
+function isTouchCapable() {
+  return (navigator.maxTouchPoints || 0) > 0
+    || (typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches);
+}
+
+function loadTouchControlsEnabled() {
+  try {
+    const stored = localStorage.getItem(TOUCH_CONTROLS_KEY);
+    if (stored === "1" || stored === "0") return stored === "1";
+  } catch {}
+  return isTouchCapable();
+}
+
+function saveTouchControlsEnabled(enabled) {
+  try {
+    localStorage.setItem(TOUCH_CONTROLS_KEY, enabled ? "1" : "0");
+  } catch {}
+}
+
+function touchMenuIsOpen() {
+  return !touchMenuEl.classList.contains("hidden");
+}
+
+function updateTouchMenuState() {
+  const status = $("conn-status");
+  const menuState = $("touch-menu-state");
+  menuState.textContent = status.textContent;
+  menuState.className = "status-pill"
+    + (status.classList.contains("live") ? " live" : "")
+    + (status.classList.contains("bad") ? " bad" : "");
+  $("touch-menu-stats").textContent = $("stats").textContent;
+  touchMenuVolume.value = String(Math.round(audio.volume * 100));
+
+  const labels = {
+    pause: $("pause-btn").textContent,
+    mute: audio.muted ? "Unmute" : "Mute",
+    fullscreen: $("fullscreen-btn").textContent,
+    controls: state.touch.enabled ? "Hide controls" : "Show controls",
+  };
+  for (const button of touchMenuEl.querySelectorAll("[data-menu-action]")) {
+    const action = button.dataset.menuAction;
+    if (labels[action]) button.textContent = labels[action];
+    if (action === "controls") {
+      button.disabled = false;
+      continue;
+    }
+    const sourceId = TOUCH_MENU_SOURCE[action];
+    button.disabled = Boolean(sourceId && $(sourceId)?.disabled);
+  }
+}
+
+function openTouchMenu() {
+  if (!state.streaming) return;
+  resetTouchControls();
+  sendInput(true);
+  hidePlayerBar();
+  updateTouchMenuState();
+  touchMenuEl.classList.remove("hidden");
+  touchMenuEl.setAttribute("aria-hidden", "false");
+  touchMenuBtn.setAttribute("aria-expanded", "true");
+  document.body.classList.add("touch-menu-open");
+  $("touch-menu-close").focus({ preventScroll: true });
+}
+
+function closeTouchMenu({ restoreFocus = true } = {}) {
+  if (!touchMenuIsOpen()) return;
+  touchMenuEl.classList.add("hidden");
+  touchMenuEl.setAttribute("aria-hidden", "true");
+  touchMenuBtn.setAttribute("aria-expanded", "false");
+  document.body.classList.remove("touch-menu-open");
+  if (restoreFocus && !touchMenuBtn.classList.contains("hidden")) {
+    touchMenuBtn.focus({ preventScroll: true });
+  }
+  if (state.streaming) sendInput(true);
+}
+
+function syncTouchMenuButton() {
+  const visible = (state.ui.touchCapable || state.touch.enabled) && state.streaming;
+  touchMenuBtn.classList.toggle("hidden", !visible);
+  touchMenuBtn.setAttribute("aria-expanded", String(touchMenuIsOpen()));
+  if (!visible && touchMenuIsOpen()) closeTouchMenu({ restoreFocus: false });
+}
+
+function syncTouchControlsUi() {
+  const playerActive = document.body.classList.contains("player-active");
+  const visible = state.touch.enabled && state.streaming && !state.ui.portrait;
+  touchControlsEl.classList.toggle("hidden", !visible);
+  touchControlsEl.classList.toggle("inactive", !state.streaming || state.paused);
+  touchControlsEl.setAttribute("aria-hidden", String(!visible));
+  // The player bar and toasts reposition themselves while the virtual
+  // controller owns the bottom corners, so they never sit over a stick or
+  // button and swallow its touch.
+  document.body.classList.toggle("touch-controls-active", visible);
+
+  const portraitHint = state.touch.enabled && playerActive && state.ui.portrait;
+  document.body.classList.toggle("touch-portrait", portraitHint);
+  rotateHintEl.classList.toggle("hidden", !portraitHint);
+
+  const checkbox = $("opt-touch-controls");
+  if (checkbox) checkbox.checked = state.touch.enabled;
+
+  const toggle = $("touch-toggle-btn");
+  if (toggle) {
+    toggle.classList.toggle("hidden", !state.ui.touchCapable && !state.touch.enabled);
+    toggle.setAttribute("aria-pressed", String(state.touch.enabled));
+    toggle.textContent = state.touch.enabled ? "Hide controls" : "Show controls";
+    toggle.title = state.touch.enabled ? "Hide on-screen touch controls" : "Show on-screen touch controls";
+  }
+  syncTouchMenuButton();
+}
+
+function setTouchControlsEnabled(enabled, persist = true) {
+  state.touch.enabled = Boolean(enabled);
+  if (persist) saveTouchControlsEnabled(state.touch.enabled);
+  if (!state.touch.enabled) resetTouchControls();
+  syncTouchControlsUi();
+  updateOrientationState();
+}
+
+function virtualInputAllowed() {
+  return state.touch.enabled && state.streaming && !state.paused
+    && !settingsIsOpen() && !touchMenuIsOpen();
+}
+
+function touchButtons() {
+  let mask = 0;
+  for (const record of state.touch.pointers.values()) {
+    if (record.kind === "button") mask |= TOUCH_BUTTON_BITS[record.action] || 0;
+  }
+  for (const key of state.touch.latches.keys()) {
+    if (key.startsWith("button:")) mask |= TOUCH_BUTTON_BITS[key.slice(7)] || 0;
+  }
+  for (const direction of Object.keys(TOUCH_DPAD_BITS)) {
+    if (state.touch.dpad[direction]) mask |= TOUCH_DPAD_BITS[direction];
+  }
+  return mask;
+}
+
+function touchTrigger(which) {
+  for (const record of state.touch.pointers.values()) {
+    if (record.kind === "trigger" && record.trigger === which) return 255;
+  }
+  return state.touch.latches.has(`trigger:${which}`) ? 255 : 0;
+}
+
+function vpadStick(slot) {
+  const stick = state.touch[slot];
+  return stick.active ? { x: stick.x, y: stick.y } : null;
+}
+
+function cancelTouchLatch(key) {
+  const timer = state.touch.latches.get(key);
+  if (timer) clearTimeout(timer);
+  state.touch.latches.delete(key);
+}
+
+function scheduleTouchLatch(key, delay) {
+  cancelTouchLatch(key);
+  const timer = setTimeout(() => {
+    state.touch.latches.delete(key);
+    sendInput(true);
+  }, Math.max(0, delay));
+  state.touch.latches.set(key, timer);
+}
+
+function resetTouchControls() {
+  for (const timer of state.touch.latches.values()) clearTimeout(timer);
+  state.touch.latches.clear();
+  for (const [pointerId, record] of state.touch.pointers) {
+    record.element?.classList.remove("pressed");
+    try { record.element?.releasePointerCapture(pointerId); } catch {}
+  }
+  state.touch.pointers.clear();
+
+  for (const slot of ["left", "right"]) {
+    const stick = state.touch[slot];
+    const element = slot === "left" ? leftStickEl : rightStickEl;
+    if (stick.pointerId !== null) {
+      try { element?.releasePointerCapture(stick.pointerId); } catch {}
+    }
+    stick.active = false;
+    stick.pointerId = null;
+    stick.origin = null;
+    stick.x = 0;
+    stick.y = 0;
+    const knob = (slot === "left" ? leftStickEl : rightStickEl)?.querySelector(".tc-stick-knob");
+    if (knob) knob.style.transform = "translate(-50%, -50%)";
+  }
+
+  if (state.touch.dpad.pointerId !== null) {
+    try { dpadEl.releasePointerCapture(state.touch.dpad.pointerId); } catch {}
+  }
+  state.touch.dpad.pointerId = null;
+  state.touch.dpad.rect = null;
+  state.touch.dpad.origin = null;
+  state.touch.dpad.up = false;
+  state.touch.dpad.down = false;
+  state.touch.dpad.left = false;
+  state.touch.dpad.right = false;
+  if (dpadEl) {
+    for (const button of dpadEl.querySelectorAll("[data-dpad]")) button.classList.remove("pressed");
+  }
+
+  for (const which of ["l2", "r2"]) {
+    state.touch.triggers[which].active = false;
+    state.touch.triggers[which].pointerId = null;
+    state.touch.triggers[which].until = 0;
+  }
+  touchControlsEl?.querySelectorAll(".pressed").forEach((element) => element.classList.remove("pressed"));
+}
+
+function isLoopbackHost(hostname) {
+  return hostname === "localhost"
+    || hostname.endsWith(".localhost")
+    || hostname === "127.0.0.1"
+    || hostname === "[::1]"
+    || hostname === "::1";
+}
+
+function isInsecureRemoteOrigin() {
+  return location.protocol === "http:"
+    && !isLoopbackHost(location.hostname)
+    && window.isSecureContext === false;
+}
+
+function updateInsecureBanner() {
+  const dismissed = (() => {
+    try { return sessionStorage.getItem(INSECURE_DISMISS_KEY) === "1"; } catch { return false; }
+  })();
+  state.ui.insecure = isInsecureRemoteOrigin();
+  $("insecure-banner").classList.toggle("hidden", !state.ui.insecure || dismissed);
+}
+
+function primeInsecureWarning() {
+  updateInsecureBanner();
+  if (!state.ui.insecure) return;
+  let dismissed = false;
+  try { dismissed = sessionStorage.getItem(INSECURE_DISMISS_KEY) === "1"; } catch {}
+  if (!dismissed) {
+    toast("Insecure HTTP connection: phones and tablets may block sensors, gamepads, or WebRTC. You can continue; use HTTPS or localhost for full support.", false, 8000);
+  }
+}
+
+function updateOrientationState() {
+  const portrait = portraitMedia.matches;
+  const changed = state.ui.portrait !== portrait;
+  state.ui.portrait = portrait;
+  if (changed) resetTouchControls();
+  syncTouchControlsUi();
+  if (changed && state.streaming) sendInput(true);
+}
+
+function motionSupported() {
+  return Boolean(MotionMath)
+    && typeof DeviceMotionEvent !== "undefined"
+    && typeof DeviceOrientationEvent !== "undefined";
+}
+
+function phoneSensorsAvailable() {
+  return isTouchCapable() && motionSupported();
+}
+
+function motionNeedsPermission() {
+  return (typeof DeviceMotionEvent !== "undefined"
+      && typeof DeviceMotionEvent.requestPermission === "function")
+    || (typeof DeviceOrientationEvent !== "undefined"
+      && typeof DeviceOrientationEvent.requestPermission === "function");
+}
+
+function loadMotionEnabled() {
+  try {
+    const stored = localStorage.getItem(MOTION_KEY);
+    if (stored === "1" || stored === "0") return stored === "1";
+  } catch {}
+  return true;
+}
+
+function startMotionIfEnabled() {
+  if (!state.motion.enabled || !phoneSensorsAvailable() || !state.streaming) return;
+  if (motionNeedsPermission() && state.motion.permission !== "granted") {
+    if (state.motion.permission !== "denied") state.motion.permission = "prompt";
+    updateMotionStatus();
+    return;
+  }
+  if (state.motion.sensorsAttached) return;
+  window.addEventListener("devicemotion", onDeviceMotion, { passive: true });
+  window.addEventListener("deviceorientation", onDeviceOrientation, { passive: true });
+  state.motion.sensorsAttached = true;
+  state.motion.permission = "granted";
+  updateMotionStatus();
+}
+
+function stopMotionSensors() {
+  if (!state.motion.sensorsAttached) return;
+  window.removeEventListener("devicemotion", onDeviceMotion);
+  window.removeEventListener("deviceorientation", onDeviceOrientation);
+  state.motion.sensorsAttached = false;
+  state.motion.lastEventAt = 0;
+  updateMotionStatus();
+}
+
+function requestMotionPermissionFromGesture() {
+  if (!phoneSensorsAvailable()) {
+    updateMotionStatus();
+    return;
+  }
+  if (!motionSupported()) {
+    state.motion.permission = "unsupported";
+    toast("Motion sensors are not available in this browser", true);
+    updateMotionStatus();
+    return;
+  }
+  if (!motionNeedsPermission()) {
+    state.motion.permission = "granted";
+    startMotionIfEnabled();
+    updateMotionStatus();
+    return;
+  }
+
+  const requests = [];
+  try {
+    if (typeof DeviceMotionEvent.requestPermission === "function") {
+      requests.push(DeviceMotionEvent.requestPermission());
+    }
+    if (typeof DeviceOrientationEvent.requestPermission === "function") {
+      requests.push(DeviceOrientationEvent.requestPermission());
+    }
+  } catch {
+    state.motion.permission = "denied";
+    toast("Motion access was denied", true);
+    updateMotionStatus();
+    return;
+  }
+
+  Promise.all(requests).then((results) => {
+    if (results.every((result) => result === "granted")) {
+      state.motion.permission = "granted";
+      startMotionIfEnabled();
+      updateMotionStatus();
+      toast("Motion sensors enabled");
+    } else {
+      state.motion.permission = "denied";
+      updateMotionStatus();
+      toast("Motion access was denied. Allow Motion & Orientation Access in browser settings, then try again.", true);
+    }
+  }).catch(() => {
+    state.motion.permission = "denied";
+    updateMotionStatus();
+    toast("Motion access was denied or is unavailable on this page", true);
+  });
+}
+
+function primeMotionForStart() {
+  if (!state.motion.enabled || !phoneSensorsAvailable()) return;
+  if (state.motion.permission === "granted"
+      || state.motion.permission === "denied"
+      || state.motion.permission === "unsupported") return;
+  requestMotionPermissionFromGesture();
+}
+
+function currentScreenAngle() {
+  const angle = screen.orientation?.angle;
+  if (Number.isFinite(angle)) return angle;
+  if (Number.isFinite(window.orientation)) {
+    return (360 - window.orientation) % 360;
+  }
+  return 0;
+}
+
+function onDeviceMotion(event) {
+  const now = performance.now();
+  const wasStale = !state.motion.lastEventAt || now - state.motion.lastEventAt > MOTION_STALE_MS;
+  state.motion.lastEventAt = now;
+  const rate = event.rotationRate;
+  state.motion.rotationRate = {
+    alpha: Number.isFinite(rate?.alpha) ? rate.alpha : 0,
+    beta: Number.isFinite(rate?.beta) ? rate.beta : 0,
+    gamma: Number.isFinite(rate?.gamma) ? rate.gamma : 0,
+  };
+  const accel = event.accelerationIncludingGravity || event.acceleration;
+  state.motion.acceleration = accel
+    ? {
+        x: Number.isFinite(accel.x) ? accel.x : 0,
+        y: Number.isFinite(accel.y) ? accel.y : 9.80665,
+        z: Number.isFinite(accel.z) ? accel.z : 0,
+      }
+    : { x: 0, y: 9.80665, z: 0 };
+  if (wasStale) updateMotionStatus();
+}
+
+function onDeviceOrientation(event) {
+  const now = performance.now();
+  const wasStale = !state.motion.lastEventAt || now - state.motion.lastEventAt > MOTION_STALE_MS;
+  state.motion.lastEventAt = now;
+  state.motion.alpha = Number.isFinite(event.alpha) ? event.alpha : 0;
+  state.motion.beta = Number.isFinite(event.beta) ? event.beta : 0;
+  state.motion.gamma = Number.isFinite(event.gamma) ? event.gamma : 0;
+  state.motion.hasOrientation = true;
+  if (wasStale) updateMotionStatus();
+}
+
+function phoneMotion() {
+  if (!phoneSensorsAvailable() || !state.motion.sensorsAttached || !MotionMath) return null;
+  if (!state.motion.lastEventAt
+      || performance.now() - state.motion.lastEventAt > MOTION_STALE_MS) return null;
+  const angle = currentScreenAngle();
+  const gyro = MotionMath.gyroDegPerSecToRadPerSec(state.motion.rotationRate, angle);
+  const accel = MotionMath.accelMps2ToG(state.motion.acceleration, angle);
+  let orientation = [0, 0, 0, 1];
+  if (state.motion.hasOrientation) {
+    const device = MotionMath.quatFromEulerZXY(
+      state.motion.alpha,
+      state.motion.beta,
+      state.motion.gamma,
+    );
+    const current = MotionMath.quatMultiply(MotionMath.screenQuaternion(angle), device);
+    orientation = MotionMath.quatNormalize(
+      MotionMath.quatMultiply(state.motion.recenterQuat, current),
+    );
+  }
+  if (gyro.some((value) => !Number.isFinite(value))
+      || accel.some((value) => !Number.isFinite(value))
+      || orientation.some((value) => !Number.isFinite(value))) {
+    return null;
+  }
+  return {
+    angular_velocity: gyro,
+    linear_acceleration: accel,
+    orientation,
+  };
+}
+
+function sampleMotion(pad) {
+  return phoneMotion() || gamepadMotion(pad);
+}
+
+function recenterMotion() {
+  if (!state.motion.sensorsAttached || !state.motion.lastEventAt || !state.motion.hasOrientation) {
+    toast("No motion orientation data yet", true);
+    return;
+  }
+  const angle = currentScreenAngle();
+  const device = MotionMath.quatFromEulerZXY(
+    state.motion.alpha,
+    state.motion.beta,
+    state.motion.gamma,
+  );
+  const current = MotionMath.quatMultiply(MotionMath.screenQuaternion(angle), device);
+  state.motion.recenterQuat = MotionMath.quatFromYaw(-MotionMath.quatYaw(current));
+  toast("Motion recentered");
+  updateMotionStatus();
+}
+
+function motionFresh() {
+  return state.motion.sensorsAttached
+    && state.motion.lastEventAt > 0
+    && performance.now() - state.motion.lastEventAt <= MOTION_STALE_MS;
+}
+
+function updateMotionStatus() {
+  const status = $("motion-status");
+  if (!status) return;
+  const enable = $("motion-enable-btn");
+  const recenter = $("motion-recenter-btn");
+  const secureHint = $("motion-secure-hint");
+  const insecure = isInsecureRemoteOrigin();
+  secureHint.classList.toggle("hidden", !insecure || !isTouchCapable());
+
+  let text;
+  if (!isTouchCapable()) {
+    text = "Phone motion is available on touch devices; gamepad pose is used when available.";
+  } else if (!motionSupported()) {
+    text = "Motion sensors are not available in this browser.";
+  } else if (!state.motion.enabled) {
+    text = "Motion sensors are off.";
+  } else if (state.motion.permission === "denied") {
+    text = "Motion permission was denied. Allow Motion & Orientation Access in browser settings, then try again.";
+  } else if (motionNeedsPermission() && state.motion.permission !== "granted") {
+    text = "Sensor permission is required. Tap Enable sensors.";
+  } else if (!state.motion.sensorsAttached) {
+    text = "Ready when a stream starts.";
+  } else if (!motionFresh()) {
+    text = "Waiting for sensor data…";
+  } else {
+    text = "Sensors active.";
+  }
+  status.textContent = text;
+  enable.classList.toggle(
+    "hidden",
+    !isTouchCapable() || !state.motion.enabled
+      || !motionNeedsPermission() || state.motion.permission === "granted",
+  );
+  const canRecenter = isTouchCapable()
+    && state.motion.enabled && motionFresh() && state.motion.hasOrientation;
+  recenter.disabled = !canRecenter;
+  const overlayRecenter = $("tc-recenter");
+  overlayRecenter.disabled = !canRecenter;
+  overlayRecenter.classList.toggle("hidden", !isTouchCapable() || !state.motion.enabled);
+}
+
+function sendInput(force = false) {
   if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
-  const buttons = keyboardButtons() | gamepadButtons();
   const pad = activeGamepad();
-  const l2 = Math.max(keyboardTrigger("l2"), mouseTrigger("right"), pad ? Math.round((pad.buttons[6]?.value || 0) * 255) : 0);
-  const r2 = Math.max(keyboardTrigger("r2"), mouseTrigger("left"), pad ? Math.round((pad.buttons[7]?.value || 0) * 255) : 0);
+  const buttons = keyboardButtons() | gamepadButtons() | touchButtons();
+  const l2 = Math.max(
+    touchTrigger("l2"),
+    keyboardTrigger("l2"),
+    mouseTrigger("right"),
+    pad ? Math.round((pad.buttons[6]?.value || 0) * 255) : 0,
+  );
+  const r2 = Math.max(
+    touchTrigger("r2"),
+    keyboardTrigger("r2"),
+    mouseTrigger("left"),
+    pad ? Math.round((pad.buttons[7]?.value || 0) * 255) : 0,
+  );
   let lx = 0, ly = 0, rx = 0, ry = 0;
   if (pad) {
     lx = axisToI16(deadzone(pad.axes[0] || 0));
@@ -2871,6 +3538,13 @@ function sendInput() {
     if (Math.abs(state.mouse.dy) < 0.01) state.mouse.dy = 0;
   }
 
+  // Touch sticks are authoritative while their pointer is active:
+  // left touch > keyboard > gamepad; right touch > mouse-look > gamepad.
+  const touchLeft = vpadStick("left");
+  if (touchLeft) { lx = touchLeft.x; ly = touchLeft.y; }
+  const touchRight = vpadStick("right");
+  if (touchRight) { rx = touchRight.x; ry = touchRight.y; }
+
   const touches = [...state.touches.values()].map((t) => ({
     id: t.id, x: t.x, y: t.y,
   }));
@@ -2883,13 +3557,13 @@ function sendInput() {
     lx, ly, rx, ry,
     touches,
   };
-  if ($("opt-motion").checked) {
-    const motion = gamepadMotion(pad);
+  if (state.motion.enabled) {
+    const motion = sampleMotion(pad);
     if (motion) payload.motion = motion;
   }
   const json = JSON.stringify(payload);
   const now = performance.now();
-  if (json === state.lastInputJson && now - state.lastInputAt < 100) return;
+  if (!force && json === state.lastInputJson && now - state.lastInputAt < 100) return;
   state.lastInputJson = json;
   state.lastInputAt = now;
   sendWs(payload);
@@ -3015,6 +3689,9 @@ function captureScreenshot() {
 function setPaused(paused) {
   if (paused) {
     state.paused = true;
+    resetTouchControls();
+    if (state.streaming) sendInput(true);
+    syncTouchControlsUi();
     // Keep the media element playing behind the overlay. Pausing it can stop
     // the browser from draining WebRTC, which backs up the server's video
     // queue and produces IDR churn. Mute and cover the view instead.
@@ -3028,6 +3705,7 @@ function setPaused(paused) {
   applyAudioState();
   $("pause-btn").textContent = "Pause";
   hideOverlay();
+  syncTouchControlsUi();
   setStatus(state.streaming ? "Live" : "Connected", state.streaming ? "live" : "");
   video.play().catch(() => {
     toast("Click the video to resume playback", true);
@@ -3110,7 +3788,7 @@ video.addEventListener("pointerdown", (event) => {
   const id = state.touchSeq++ & 0x7f;
   const point = touchpadPoint(event);
   state.touches.set(event.pointerId, { id, ...point });
-  video.setPointerCapture?.(event.pointerId);
+  try { video.setPointerCapture?.(event.pointerId); } catch {}
 });
 video.addEventListener("pointermove", (event) => {
   if (event.pointerType !== "touch") return;
@@ -3125,6 +3803,343 @@ function endTouch(event) {
 }
 video.addEventListener("pointerup", endTouch);
 video.addEventListener("pointercancel", endTouch);
+video.addEventListener("lostpointercapture", endTouch);
+
+/* On-screen controller */
+
+const dpadButtonEls = {
+  up: dpadEl.querySelector('[data-dpad="up"]'),
+  down: dpadEl.querySelector('[data-dpad="down"]'),
+  left: dpadEl.querySelector('[data-dpad="left"]'),
+  right: dpadEl.querySelector('[data-dpad="right"]'),
+};
+
+function releaseTouchRecord(pointerId) {
+  const record = state.touch.pointers.get(pointerId);
+  if (!record || (record.kind !== "button" && record.kind !== "trigger")) return;
+  state.touch.pointers.delete(pointerId);
+  record.element?.classList.remove("pressed");
+
+  const key = record.kind === "button"
+    ? `button:${record.action}`
+    : `trigger:${record.trigger}`;
+  const stillHeld = [...state.touch.pointers.values()].some((other) =>
+    record.kind === "button"
+      ? other.kind === "button" && other.action === record.action
+      : other.kind === "trigger" && other.trigger === record.trigger
+  );
+  if (!stillHeld) {
+    const held = performance.now() - record.pressedAt;
+    if (held < TOUCH_TAP_MIN_MS) scheduleTouchLatch(key, TOUCH_TAP_MIN_MS - held);
+  }
+  sendInput(true);
+}
+
+function onTouchButtonDown(event) {
+  if (!virtualInputAllowed()) return;
+  const action = event.currentTarget.dataset.button;
+  const trigger = event.currentTarget.dataset.trigger;
+  if (!action && !trigger) return;
+  if (action && !TOUCH_BUTTON_BITS[action]) return;
+  if (state.touch.pointers.has(event.pointerId)) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+  cancelTouchLatch(action ? `button:${action}` : `trigger:${trigger}`);
+  state.touch.pointers.set(event.pointerId, {
+    kind: action ? "button" : "trigger",
+    action,
+    trigger,
+    element: event.currentTarget,
+    pressedAt: performance.now(),
+  });
+  event.currentTarget.classList.add("pressed");
+  try { event.currentTarget.setPointerCapture(event.pointerId); } catch {}
+  sendInput(true);
+}
+
+function onTouchButtonEnd(event) {
+  const record = state.touch.pointers.get(event.pointerId);
+  if (!record || (record.kind !== "button" && record.kind !== "trigger")) return;
+  event.preventDefault();
+  event.stopPropagation();
+  releaseTouchRecord(event.pointerId);
+}
+
+function stickSlotFor(element) {
+  return element === leftStickEl ? state.touch.left : state.touch.right;
+}
+
+// A touch origin keeps the control-local position captured at pointerdown.
+// `offsetX/offsetY` is relative to the stick itself and remains usable when
+// Android Chrome's fullscreen visual viewport makes clientX/clientY report a
+// different origin. If a browser leaves offset coordinates frozen, drag
+// deltas from the original client position take over instead.
+function touchOffsetPoint(element, event) {
+  if (event.target !== element) return null;
+  const x = Number(event.offsetX);
+  const y = Number(event.offsetY);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  // offsetX/Y are relative to the padding edge; the stick rect includes its
+  // border. Align both coordinate spaces before comparing them.
+  return { x: x + element.clientLeft, y: y + element.clientTop };
+}
+
+function pointInsideRect(point, rect) {
+  return point.x >= -0.5 && point.y >= -0.5
+    && point.x <= rect.width + 0.5 && point.y <= rect.height + 0.5;
+}
+
+function beginTouchOrigin(element, event) {
+  const rect = element.getBoundingClientRect();
+  const offset = touchOffsetPoint(element, event);
+  const clientLocalX = event.clientX - rect.left;
+  const clientLocalY = event.clientY - rect.top;
+  const clientLocal = { x: clientLocalX, y: clientLocalY };
+  const offsetUsable = offset && pointInsideRect(offset, rect);
+  const clientUsable = pointInsideRect(clientLocal, rect);
+  // Normal case: the client and target-local spaces agree, so use the exact
+  // client position. If the client position falls outside a control we are
+  // clearly touching, the browser has reported it in another viewport space
+  // (Android fullscreen); use the target-local position instead.
+  const local = (!clientUsable && offsetUsable) ? offset : clientLocal;
+  return {
+    rect,
+    clientX: event.clientX,
+    clientY: event.clientY,
+    clientLocalX,
+    clientLocalY,
+    offsetX: offset?.x ?? 0,
+    offsetY: offset?.y ?? 0,
+    x: local.x,
+    y: local.y,
+  };
+}
+
+function localPointForEvent(element, origin, event) {
+  const rect = origin.rect;
+  const offset = touchOffsetPoint(element, event);
+  const clientLocal = {
+    x: event.clientX - rect.left,
+    y: event.clientY - rect.top,
+  };
+  if (offset) {
+    const clientMoved = Math.hypot(
+      event.clientX - origin.clientX,
+      event.clientY - origin.clientY,
+    );
+    const offsetMoved = Math.hypot(
+      offset.x - origin.offsetX,
+      offset.y - origin.offsetY,
+    );
+    // Prefer target-local coordinates when client coordinates are frozen.
+    // When both move and both are inside the control, the client position is
+    // exact; otherwise target-local coordinates avoid the viewport offset.
+    if (offsetMoved >= 0.5 || clientMoved < 0.5) {
+      const offsetUsable = pointInsideRect(offset, rect);
+      const clientUsable = pointInsideRect(clientLocal, rect);
+      if (offsetUsable && !clientUsable) return offset;
+      if (!offsetUsable && clientUsable) return clientLocal;
+      if (offsetUsable && clientUsable) {
+        return clientMoved >= 0.5 ? clientLocal : offset;
+      }
+    }
+  }
+  return {
+    x: origin.clientLocalX + (event.clientX - origin.clientX),
+    y: origin.clientLocalY + (event.clientY - origin.clientY),
+  };
+}
+
+function updateStickFromLocal(element, slot, localX, localY, rect) {
+  const radius = rect.width * 0.32;
+  if (!rect.width || !rect.height) return;
+  let dx = (localX - rect.width / 2) / radius;
+  let dy = (localY - rect.height / 2) / radius;
+  const length = Math.hypot(dx, dy);
+  if (length > 1) { dx /= length; dy /= length; }
+  if (Math.hypot(dx, dy) < 0.12) { dx = 0; dy = 0; }
+  slot.x = Math.round(dx * 32767);
+  slot.y = Math.round(dy * 32767);
+  const knob = element.querySelector(".tc-stick-knob");
+  if (knob) {
+    const travel = rect.width * 0.30;
+    knob.style.transform = `translate(calc(-50% + ${dx * travel}px), calc(-50% + ${dy * travel}px))`;
+  }
+}
+
+function onStickDown(event) {
+  if (!virtualInputAllowed()) return;
+  const slot = stickSlotFor(event.currentTarget);
+  if (slot.pointerId !== null) return;
+  event.preventDefault();
+  event.stopPropagation();
+  slot.pointerId = event.pointerId;
+  slot.active = true;
+  slot.origin = beginTouchOrigin(event.currentTarget, event);
+  try { event.currentTarget.setPointerCapture(event.pointerId); } catch {}
+  updateStickFromLocal(
+    event.currentTarget, slot, slot.origin.x, slot.origin.y, slot.origin.rect,
+  );
+  sendInput(true);
+}
+
+const touchStickElements = [["left", leftStickEl], ["right", rightStickEl]];
+
+function resetStick(slot, element) {
+  slot.pointerId = null;
+  slot.active = false;
+  slot.origin = null;
+  slot.x = 0;
+  slot.y = 0;
+  const knob = element?.querySelector(".tc-stick-knob");
+  if (knob) knob.style.transform = "translate(-50%, -50%)";
+}
+
+function endStickForPointer(pointerId) {
+  let changed = false;
+  for (const [name, element] of touchStickElements) {
+    const slot = state.touch[name];
+    if (slot.pointerId !== pointerId) continue;
+    try { element.releasePointerCapture(pointerId); } catch {}
+    resetStick(slot, element);
+    changed = true;
+  }
+  return changed;
+}
+
+function onStickMove(event) {
+  let moved = false;
+  for (const [name, element] of touchStickElements) {
+    const slot = state.touch[name];
+    if (slot.pointerId !== event.pointerId || !slot.origin) continue;
+    const point = localPointForEvent(element, slot.origin, event);
+    updateStickFromLocal(element, slot, point.x, point.y, slot.origin.rect);
+    moved = true;
+  }
+  if (moved) event.preventDefault();
+}
+
+function onStickEnd(event) {
+  if (!endStickForPointer(event.pointerId)) return;
+  event.preventDefault();
+  sendInput(true);
+}
+
+function setDpadBits(up, down, left, right, notify = true) {
+  const dpad = state.touch.dpad;
+  const changed = dpad.up !== up || dpad.down !== down || dpad.left !== left || dpad.right !== right;
+  dpad.up = up;
+  dpad.down = down;
+  dpad.left = left;
+  dpad.right = right;
+  dpadButtonEls.up?.classList.toggle("pressed", up);
+  dpadButtonEls.down?.classList.toggle("pressed", down);
+  dpadButtonEls.left?.classList.toggle("pressed", left);
+  dpadButtonEls.right?.classList.toggle("pressed", right);
+  if (notify && changed && state.streaming) sendInput(true);
+}
+
+function updateDpadFromLocal(localX, localY, rect) {
+  if (!rect) return;
+  const dx = localX - rect.width / 2;
+  const dy = localY - rect.height / 2;
+  if (Math.hypot(dx, dy) < rect.width * 0.18) {
+    setDpadBits(false, false, false, false);
+    return;
+  }
+  const angle = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
+  const sector = Math.round(angle / 45) % 8;
+  setDpadBits(
+    sector === 5 || sector === 6 || sector === 7,
+    sector === 1 || sector === 2 || sector === 3,
+    sector === 3 || sector === 4 || sector === 5,
+    sector === 7 || sector === 0 || sector === 1,
+  );
+}
+
+function onDpadDown(event) {
+  if (!virtualInputAllowed()) return;
+  if (state.touch.dpad.pointerId !== null) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const origin = beginTouchOrigin(dpadEl, event);
+  state.touch.dpad.pointerId = event.pointerId;
+  state.touch.dpad.rect = origin.rect;
+  state.touch.dpad.origin = origin;
+  try { dpadEl.setPointerCapture(event.pointerId); } catch {}
+  updateDpadFromLocal(origin.x, origin.y, origin.rect);
+  sendInput(true);
+}
+
+function onDpadMove(event) {
+  if (state.touch.dpad.pointerId !== event.pointerId) return;
+  const origin = state.touch.dpad.origin;
+  if (!origin) return;
+  event.preventDefault();
+  const point = localPointForEvent(dpadEl, origin, event);
+  updateDpadFromLocal(point.x, point.y, origin.rect);
+}
+
+function endDpadForPointer(pointerId) {
+  if (state.touch.dpad.pointerId !== pointerId) return false;
+  try { dpadEl.releasePointerCapture(pointerId); } catch {}
+  state.touch.dpad.pointerId = null;
+  state.touch.dpad.rect = null;
+  state.touch.dpad.origin = null;
+  setDpadBits(false, false, false, false);
+  return true;
+}
+
+function onDpadEnd(event) {
+  if (!endDpadForPointer(event.pointerId)) return;
+  event.preventDefault();
+  sendInput(true);
+}
+
+// Pointer capture is the primary tracking mechanism, but some mobile
+// browsers drop capture (or never grant it) when a finger leaves the control.
+// Document-level fallbacks keep the stick following the finger and, more
+// importantly, guarantee that a release cannot leave a button or axis stuck.
+function onDocumentPointerMove(event) {
+  onStickMove(event);
+  onDpadMove(event);
+}
+
+function onDocumentPointerEnd(event) {
+  const stickChanged = endStickForPointer(event.pointerId);
+  const dpadChanged = endDpadForPointer(event.pointerId);
+  if (state.touch.pointers.has(event.pointerId)) releaseTouchRecord(event.pointerId);
+  // The video's own listeners cannot see a release once pointer capture has
+  // been lost. Clear touchpad contacts here so a dropped capture cannot leave
+  // a phantom finger held down for the rest of the session.
+  state.touches.delete(event.pointerId);
+  if (stickChanged || dpadChanged) sendInput(true);
+}
+
+function initTouchInput() {
+  state.ui.touchCapable = isTouchCapable();
+  state.touch.enabled = loadTouchControlsEnabled();
+
+  for (const element of touchControlsEl.querySelectorAll("[data-button], [data-trigger]")) {
+    element.addEventListener("pointerdown", onTouchButtonDown);
+    element.addEventListener("pointerup", onTouchButtonEnd);
+    element.addEventListener("pointercancel", onTouchButtonEnd);
+    element.addEventListener("lostpointercapture", onTouchButtonEnd);
+  }
+  for (const element of [leftStickEl, rightStickEl]) {
+    element.addEventListener("pointerdown", onStickDown);
+    element.addEventListener("lostpointercapture", onStickEnd);
+  }
+  dpadEl.addEventListener("pointerdown", onDpadDown);
+  dpadEl.addEventListener("lostpointercapture", onDpadEnd);
+  document.addEventListener("pointermove", onDocumentPointerMove, { passive: false });
+  document.addEventListener("pointerup", onDocumentPointerEnd);
+  document.addEventListener("pointercancel", onDocumentPointerEnd);
+  touchControlsEl.addEventListener("contextmenu", (event) => event.preventDefault());
+  $("tc-recenter").addEventListener("click", recenterMotion);
+  syncTouchControlsUi();
+}
 
 /* Rumble */
 
@@ -3253,7 +4268,62 @@ $("settings-done").addEventListener("click", closeSettings);
 $("settings-scrim").addEventListener("click", closeSettings);
 $("settings-stream-tab").addEventListener("click", () => setSettingsTab("stream"));
 $("settings-picture-tab").addEventListener("click", () => setSettingsTab("picture"));
-$("settings-input-tab").addEventListener("click", () => setSettingsTab("input"));
+$("settings-input-tab").addEventListener("click", () => {
+  setSettingsTab("input");
+  loadMacPsSetting();
+  syncTouchControlsUi();
+  updateMotionStatus();
+});
+$("opt-touch-controls").addEventListener("change", (event) => {
+  setTouchControlsEnabled(event.target.checked);
+});
+$("touch-toggle-btn").addEventListener("click", () => {
+  setTouchControlsEnabled(!state.touch.enabled);
+  toast(state.touch.enabled ? "On-screen controls shown" : "On-screen controls hidden");
+  showPlayerBar();
+});
+$("opt-motion").addEventListener("change", (event) => {
+  state.motion.enabled = event.target.checked;
+  try { localStorage.setItem(MOTION_KEY, state.motion.enabled ? "1" : "0"); } catch {}
+  if (!state.motion.enabled) {
+    stopMotionSensors();
+    updateMotionStatus();
+    return;
+  }
+  requestMotionPermissionFromGesture();
+});
+$("motion-enable-btn").addEventListener("click", () => {
+  if (!state.motion.enabled) {
+    state.motion.enabled = true;
+    $("opt-motion").checked = true;
+    try { localStorage.setItem(MOTION_KEY, "1"); } catch {}
+  }
+  requestMotionPermissionFromGesture();
+});
+$("motion-recenter-btn").addEventListener("click", recenterMotion);
+$("insecure-dismiss").addEventListener("click", () => {
+  try { sessionStorage.setItem(INSECURE_DISMISS_KEY, "1"); } catch {}
+  updateInsecureBanner();
+});
+$("opt-mac-ps").addEventListener("change", async (event) => {
+  const wanted = event.target.checked;
+  event.target.disabled = true;
+  try {
+    const status = await api("/api/system/game-controller", {
+      method: "POST",
+      body: JSON.stringify({ use_ps_button: wanted }),
+    });
+    event.target.checked = Boolean(status.use_ps_button);
+    toast(status.use_ps_button
+      ? "PS button reserved for GameBridge. Log out and back in to apply."
+      : "macOS Games app shortcut restored. Log out and back in to apply.");
+  } catch (error) {
+    event.target.checked = !wanted;
+    toast(error.message, true);
+  } finally {
+    event.target.disabled = false;
+  }
+});
 
 $("kb-profile").addEventListener("change", (event) => {
   keyboardProfile = event.target.value;
@@ -3296,6 +4366,14 @@ $("kb-profile-reset").addEventListener("click", () => {
   renderKeyboardBindings();
 });
 renderKeyboardBindings();
+
+async function loadMacPsSetting() {
+  try {
+    const status = await api("/api/system/game-controller");
+    $("mac-ps-setting").classList.toggle("hidden", !status.supported);
+    $("opt-mac-ps").checked = Boolean(status.use_ps_button);
+  } catch {}
+}
 
 const STREAM_OPTION_STORAGE = {
   resolution: "gamebridge.streamResolution",
@@ -3464,6 +4542,12 @@ document.addEventListener("click", (event) => {
 
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
+  if (touchMenuIsOpen()) {
+    event.preventDefault();
+    event.stopPropagation();
+    closeTouchMenu();
+    return;
+  }
   if (settingsIsOpen()) {
     event.preventDefault();
     event.stopPropagation();
@@ -3480,7 +4564,10 @@ document.addEventListener("keydown", (event) => {
 });
 
 videoWrap.addEventListener("mousemove", () => showPlayerBar());
-videoWrap.addEventListener("touchstart", () => showPlayerBar(), { passive: true });
+videoWrap.addEventListener("touchstart", (event) => {
+  if (event.target.closest?.("#touch-controls")) return;
+  showPlayerBar();
+}, { passive: true });
 
 $("reg-pin-clear").addEventListener("click", () => {
   $("reg-pin").value = "";
@@ -3523,6 +4610,7 @@ async function enterApp() {
   if (!loaded || !authModal.classList.contains("hidden")) return;
   await loadStatus();
   loadPsnLogin();
+  loadMacPsSetting();
   await discover({ quiet: true });
   if (!authModal.classList.contains("hidden")) return;
   const noConsoles = !state.hosts.length && !discoveredEl.querySelector(".nearby-tile");
@@ -3591,7 +4679,48 @@ window.addEventListener("beforeunload", () => {
   }
 });
 
+$("player-bar").addEventListener("pointerdown", () => clearTimeout(playerBarTimer));
+$("player-bar").addEventListener("pointerup", () => showPlayerBar());
+$("player-bar").addEventListener("pointercancel", () => showPlayerBar());
+touchMenuBtn.addEventListener("click", () => {
+  if (touchMenuIsOpen()) closeTouchMenu();
+  else openTouchMenu();
+});
+$("touch-menu-close").addEventListener("click", () => closeTouchMenu());
+$("touch-menu-backdrop").addEventListener("click", () => closeTouchMenu());
+touchMenuVolume.addEventListener("input", () => {
+  setVolume(parseInt(touchMenuVolume.value, 10) / 100);
+});
+touchMenuVolume.addEventListener("change", saveAudioState);
+touchMenuEl.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-menu-action]");
+  if (!button || button.disabled) return;
+  const action = button.dataset.menuAction;
+  if (action === "controls") {
+    const enabled = !state.touch.enabled;
+    closeTouchMenu({ restoreFocus: false });
+    setTouchControlsEnabled(enabled);
+    toast(enabled ? "On-screen controls shown" : "On-screen controls hidden");
+    return;
+  }
+  const sourceId = TOUCH_MENU_SOURCE[action];
+  if (!sourceId) return;
+  const source = $(sourceId);
+  closeTouchMenu({ restoreFocus: false });
+  if (!source.disabled) source.click();
+});
+portraitMedia.addEventListener?.("change", updateOrientationState);
+screen.orientation?.addEventListener?.("change", updateOrientationState);
+window.addEventListener("orientationchange", updateOrientationState);
+
+initTouchInput();
+state.motion.enabled = loadMotionEnabled();
+$("opt-motion").checked = state.motion.enabled;
 showHome();
+updateOrientationState();
+updateMotionStatus();
+primeInsecureWarning();
+setBusy(false);
 setBusy(false);
 loadSavedPsnAccount();
 startApp();

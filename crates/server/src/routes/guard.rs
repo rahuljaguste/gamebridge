@@ -85,8 +85,9 @@ fn allowed(bind: SocketAddr, allow_remote: bool, host: Option<&str>, origin: Opt
         return false;
     }
     let origin_port = uri.port_u16().unwrap_or(default_port);
-    // This server speaks plain HTTP, so a Host without a port means port 80.
-    origin_port == host_port.unwrap_or(80)
+    // The Host header carries no scheme. When it omits a port, infer the
+    // default from the Origin scheme so an HTTPS reverse proxy on 443 works.
+    origin_port == host_port.unwrap_or(default_port)
 }
 
 fn same_host(a: &str, b: &str) -> bool {
@@ -192,6 +193,18 @@ mod tests {
             Some("http://192.168.1.20:8080")
         ));
         assert!(allowed(any, true, Some("ps-bridge.local:8080"), None));
+        assert!(allowed(
+            any,
+            true,
+            Some("ps-bridge.local"),
+            Some("https://ps-bridge.local")
+        ));
+        assert!(allowed(
+            any,
+            true,
+            Some("ps-bridge.local"),
+            Some("http://ps-bridge.local")
+        ));
         assert!(!allowed(
             any,
             true,

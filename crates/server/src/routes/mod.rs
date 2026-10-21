@@ -41,6 +41,10 @@ pub fn router(
         .route("/session/restart", post(api::restart_session))
         .route("/session/stop", post(api::stop_session))
         .route("/status", get(api::status))
+        .route(
+            "/system/game-controller",
+            get(api::game_controller_preference).post(api::set_game_controller_preference),
+        )
         .route("/session/ws", get(ws::ws_handler))
         .route("/demo/start", post(crate::demo::start))
         .route_layer(middleware::from_fn_with_state(auth.clone(), auth::require));
@@ -53,6 +57,7 @@ pub fn router(
     Router::new()
         .route("/", get(static_files::index))
         .route("/app.js", get(static_files::app_js))
+        .route("/motion-math.js", get(static_files::motion_math_js))
         .route("/style.css", get(static_files::style_css))
         .nest("/api", protected.merge(public))
         .layer(Extension(auth))
@@ -92,7 +97,10 @@ async fn security_headers(request: axum::extract::Request, next: middleware::Nex
     );
     headers.insert(
         HeaderName::from_static("permissions-policy"),
-        HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
+        HeaderValue::from_static(
+            "camera=(), microphone=(), geolocation=(), \
+             accelerometer=(self), gyroscope=(self), magnetometer=(self)",
+        ),
     );
     response
 }
@@ -275,5 +283,14 @@ mod tests {
         assert!(csp.contains("default-src 'self'"));
         assert!(csp.contains("script-src 'self'"));
         assert!(csp.contains("frame-ancestors 'none'"));
+        let policy = response
+            .headers()
+            .get("permissions-policy")
+            .expect("permissions-policy header")
+            .to_str()
+            .expect("permissions-policy text");
+        assert!(policy.contains("accelerometer=(self)"));
+        assert!(policy.contains("gyroscope=(self)"));
+        assert!(policy.contains("magnetometer=(self)"));
     }
 }

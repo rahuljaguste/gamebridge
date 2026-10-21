@@ -237,6 +237,7 @@ compatible with that license; this file is an inventory, not legal advice.
 - powerfmt 0.2.1
 - ppv-lite86 0.2.21
 - proc-macro2 1.0.107
+- qrcode 0.14.1
 - quinn 0.11.12
 - quinn-proto 0.11.19
 - quinn-udp 0.5.16

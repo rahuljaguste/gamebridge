@@ -1,0 +1,202 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="1020" viewBox="0 0 1500 1020">
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0f172a" flood-opacity="0.08"/>
+    </filter>
+    <marker id="arrowDark" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrowMuted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/>
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8b5cf6"/>
+    </marker>
+  </defs>
+
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .title { font-size: 32px; font-weight: 700; fill: #0f172a; letter-spacing: -.5px; }
+    .subtitle { font-size: 15px; fill: #64748b; }
+    .lane { font-size: 11px; font-weight: 700; fill: #4f7cff; letter-spacing: 1.4px; }
+    .box-title { font-size: 18px; font-weight: 700; fill: #0f172a; }
+    .box-sub { font-size: 13px; fill: #475569; }
+    .box-muted { font-size: 12px; fill: #64748b; }
+    .console-title { font-size: 22px; font-weight: 700; fill: #0b2a1a; }
+    .console-sub { font-size: 13px; fill: #3f6a53; }
+    .edge-label { font-size: 12px; font-weight: 600; fill: #475569; paint-order: stroke; stroke: #f8fafc; stroke-width: 4px; stroke-linejoin: round; }
+    .media-label { fill: #2563eb; }
+    .legend { font-size: 12px; fill: #475569; }
+    .footer { font-size: 12.5px; fill: #64748b; }
+    .badge { font-size: 10px; font-weight: 700; fill: #3f6a53; letter-spacing: .8px; }
+  </style>
+
+  <rect width="1500" height="1020" fill="#f8fafc"/>
+
+  <text x="48" y="54" class="title">GameBridge — runtime architecture</text>
+  <text x="48" y="84" class="subtitle">A localhost Rust bridge between browser WebRTC and the console's Remote Play protocols.</text>
+
+  <g>
+    <line x1="1070" y1="44" x2="1106" y2="44" stroke="#475569" stroke-width="2.5"/>
+    <text x="1114" y="48" class="legend">control &amp; input</text>
+    <line x1="1218" y1="44" x2="1254" y2="44" stroke="#2563eb" stroke-width="2.5"/>
+    <text x="1262" y="48" class="legend">media</text>
+    <line x1="1070" y1="70" x2="1106" y2="70" stroke="#94a3b8" stroke-width="2.5" stroke-dasharray="4 4"/>
+    <text x="1114" y="74" class="legend">optional / future</text>
+  </g>
+
+  <text x="48" y="126" class="lane">1 · PLAYERS</text>
+  <text x="290" y="126" class="lane">2 · BROWSER RUNTIME</text>
+  <text x="570" y="126" class="lane">3 · GAMEBRIDGE PROCESS</text>
+  <text x="1160" y="126" class="lane">4 · CONSOLE</text>
+
+  <!-- Players -->
+  <g filter="url(#shadow)">
+    <rect x="48" y="160" width="200" height="95" rx="14" fill="#eef4ff" stroke="#7c9cff" stroke-width="1.5"/>
+    <rect x="48" y="270" width="200" height="95" rx="14" fill="#eef4ff" stroke="#7c9cff" stroke-width="1.5"/>
+  </g>
+  <text x="148" y="191" text-anchor="middle" class="box-title">Desktop browser</text>
+  <text x="148" y="214" text-anchor="middle" class="box-sub">keyboard · mouse</text>
+  <text x="148" y="233" text-anchor="middle" class="box-sub">gamepad</text>
+  <text x="148" y="301" text-anchor="middle" class="box-title">Phone / tablet</text>
+  <text x="148" y="324" text-anchor="middle" class="box-sub">touch controller</text>
+  <text x="148" y="343" text-anchor="middle" class="box-sub">gyro · accelerometer</text>
+
+  <!-- Browser runtime -->
+  <g filter="url(#shadow)">
+    <rect x="290" y="160" width="230" height="205" rx="16" fill="#f2f5ff" stroke="#8fa3c4" stroke-width="1.5"/>
+    <rect x="290" y="650" width="230" height="130" rx="16" fill="#f2f5ff" stroke="#8fa3c4" stroke-width="1.5"/>
+  </g>
+  <text x="405" y="192" text-anchor="middle" class="box-title">Browser UI + input</text>
+  <text x="405" y="215" text-anchor="middle" class="box-sub">screen · controls · settings</text>
+  <text x="405" y="235" text-anchor="middle" class="box-sub">keyboard · gamepad</text>
+  <text x="405" y="255" text-anchor="middle" class="box-sub">touch · motion</text>
+  <text x="405" y="295" text-anchor="middle" class="box-muted">API + WebSocket client</text>
+  <text x="405" y="683" text-anchor="middle" class="box-title">WebRTC renderer</text>
+  <text x="405" y="707" text-anchor="middle" class="box-sub">H.264/H.265 video</text>
+  <text x="405" y="727" text-anchor="middle" class="box-sub">Opus audio</text>
+  <text x="405" y="750" text-anchor="middle" class="box-muted">video element · touchpad</text>
+
+  <!-- Input arrows -->
+  <line x1="248" y1="207" x2="284" y2="207" stroke="#475569" stroke-width="2.2" marker-end="url(#arrowDark)"/>
+  <line x1="248" y1="317" x2="284" y2="317" stroke="#475569" stroke-width="2.2" marker-end="url(#arrowDark)"/>
+  <text x="266" y="196" text-anchor="middle" class="edge-label">input</text>
+  <text x="266" y="306" text-anchor="middle" class="edge-label">input</text>
+
+  <!-- GameBridge process -->
+  <rect x="550" y="140" width="570" height="700" rx="22" fill="#f8faff" stroke="#c9d4ea" stroke-width="1.5" stroke-dasharray="7 5"/>
+  <text x="570" y="164" class="box-muted">Rust process · localhost by default</text>
+
+  <g filter="url(#shadow)">
+    <rect x="570" y="180" width="175" height="130" rx="14" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+    <rect x="760" y="180" width="155" height="130" rx="14" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+    <rect x="930" y="180" width="170" height="130" rx="14" fill="#edf8f2" stroke="#5fb98a" stroke-width="1.5"/>
+    <rect x="570" y="650" width="175" height="130" rx="14" fill="#edf8f2" stroke="#5fb98a" stroke-width="1.5"/>
+    <rect x="760" y="650" width="155" height="130" rx="14" fill="#edf8f2" stroke="#5fb98a" stroke-width="1.5"/>
+    <rect x="930" y="650" width="170" height="130" rx="14" fill="#edf8f2" stroke="#5fb98a" stroke-width="1.5"/>
+    <rect x="570" y="390" width="175" height="110" rx="14" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+    <rect x="760" y="390" width="155" height="110" rx="14" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+  </g>
+
+  <text x="657" y="211" text-anchor="middle" class="box-title">Axum web layer</text>
+  <text x="657" y="235" text-anchor="middle" class="box-sub">static UI · REST</text>
+  <text x="657" y="255" text-anchor="middle" class="box-sub">session WebSocket</text>
+  <text x="657" y="279" text-anchor="middle" class="box-muted">request guard</text>
+
+  <text x="837" y="211" text-anchor="middle" class="box-title">Session manager</text>
+  <text x="837" y="235" text-anchor="middle" class="box-sub">registration · discovery</text>
+  <text x="837" y="255" text-anchor="middle" class="box-sub">wake · adaptive bitrate</text>
+  <text x="837" y="279" text-anchor="middle" class="box-muted">start / stop · recovery</text>
+
+  <text x="1015" y="211" text-anchor="middle" class="box-title">chiaki-core</text>
+  <text x="1015" y="235" text-anchor="middle" class="box-sub">control + input</text>
+  <text x="1015" y="255" text-anchor="middle" class="box-sub">feedback</text>
+  <text x="1015" y="279" text-anchor="middle" class="box-muted">session · PIN · heartbeat</text>
+
+  <text x="657" y="677" text-anchor="middle" class="box-title">WebRTC peer</text>
+  <text x="657" y="701" text-anchor="middle" class="box-sub">H.264/H.265</text>
+  <text x="657" y="721" text-anchor="middle" class="box-sub">Opus audio</text>
+  <text x="657" y="744" text-anchor="middle" class="box-muted">video · audio tracks</text>
+
+  <text x="837" y="677" text-anchor="middle" class="box-title">Media pipeline</text>
+  <text x="837" y="701" text-anchor="middle" class="box-sub">AV parse</text>
+  <text x="837" y="721" text-anchor="middle" class="box-sub">frame assembly · FEC</text>
+
+  <text x="1015" y="677" text-anchor="middle" class="box-title">Takion UDP</text>
+  <text x="1015" y="701" text-anchor="middle" class="box-sub">crypto · reorder</text>
+  <text x="1015" y="721" text-anchor="middle" class="box-sub">retransmit</text>
+
+  <text x="657" y="421" text-anchor="middle" class="box-title">Local state</text>
+  <text x="657" y="445" text-anchor="middle" class="box-sub">hosts.json · settings</text>
+  <text x="657" y="465" text-anchor="middle" class="box-sub">server.log</text>
+
+  <text x="837" y="421" text-anchor="middle" class="box-title">Demo source</text>
+  <text x="837" y="445" text-anchor="middle" class="box-sub">local H.264 file</text>
+  <text x="837" y="465" text-anchor="middle" class="box-sub">console-free path</text>
+
+  <!-- Console -->
+  <g filter="url(#shadow)">
+    <rect x="1160" y="150" width="300" height="630" rx="20" fill="#e9f7ef" stroke="#2f9e68" stroke-width="1.7"/>
+  </g>
+  <text x="1310" y="190" text-anchor="middle" class="console-title">PS4 / PS5</text>
+  <text x="1310" y="214" text-anchor="middle" class="console-sub">Remote Play console</text>
+  <rect x="1184" y="232" width="84" height="22" rx="11" fill="#d4f0e1"/>
+  <text x="1226" y="247" text-anchor="middle" class="badge">SAME LAN</text>
+
+  <text x="1184" y="290" class="lane" fill="#2f9e68">CONTROL</text>
+  <text x="1184" y="316" class="box-title" fill="#0b2a1a">Control channel</text>
+  <text x="1184" y="338" class="console-sub">TCP 9295 · PIN · heartbeat</text>
+  <line x1="1184" y1="362" x2="1436" y2="362" stroke="#b7dcc8" stroke-width="1"/>
+
+  <text x="1184" y="402" class="lane" fill="#2f9e68">DISCOVERY</text>
+  <text x="1184" y="428" class="box-title" fill="#0b2a1a">Registration / wake</text>
+  <text x="1184" y="450" class="console-sub">SRCH/SRC · UDP 9297</text>
+  <line x1="1184" y1="474" x2="1436" y2="474" stroke="#b7dcc8" stroke-width="1"/>
+
+  <text x="1184" y="620" class="lane" fill="#2f9e68">MEDIA + INPUT</text>
+  <text x="1184" y="646" class="box-title" fill="#0b2a1a">Takion transport</text>
+  <text x="1184" y="668" class="console-sub">UDP 9296</text>
+  <text x="1184" y="690" class="console-sub">video · audio · feedback</text>
+
+  <!-- GameBridge arrows -->
+  <line x1="520" y1="245" x2="564" y2="245" stroke="#475569" stroke-width="2.2" marker-end="url(#arrowDark)"/>
+  <text x="545" y="233" text-anchor="middle" class="edge-label">HTTP + WS</text>
+
+  <line x1="745" y1="245" x2="754" y2="245" stroke="#475569" stroke-width="2.2" marker-end="url(#arrowDark)"/>
+  <line x1="915" y1="245" x2="924" y2="245" stroke="#475569" stroke-width="2.2" marker-end="url(#arrowDark)"/>
+
+  <path d="M1100 245 L1130 245 L1130 285 L1154 285" fill="none" stroke="#475569" stroke-width="2.2" marker-end="url(#arrowDark)"/>
+  <text x="1120" y="233" text-anchor="middle" class="edge-label">control</text>
+
+  <line x1="1015" y1="310" x2="1015" y2="644" stroke="#475569" stroke-width="2.2" marker-end="url(#arrowDark)"/>
+  <text x="1025" y="480" class="edge-label">input state</text>
+
+  <path d="M837 310 L837 345 L657 345 L657 384" fill="none" stroke="#94a3b8" stroke-width="2.2" marker-end="url(#arrowMuted)"/>
+  <text x="745" y="337" text-anchor="middle" class="edge-label">state</text>
+
+  <path d="M837 500 L837 570 L657 570 L657 644" fill="none" stroke="#94a3b8" stroke-width="2.2" stroke-dasharray="5 4" marker-end="url(#arrowMuted)"/>
+  <text x="745" y="562" text-anchor="middle" class="edge-label">demo source</text>
+
+  <line x1="1100" y1="715" x2="1160" y2="715" stroke="#2563eb" stroke-width="2.6" marker-start="url(#arrowBlue)" marker-end="url(#arrowBlue)"/>
+
+  <line x1="930" y1="715" x2="919" y2="715" stroke="#2563eb" stroke-width="2.6" marker-end="url(#arrowBlue)"/>
+  <line x1="760" y1="715" x2="749" y2="715" stroke="#2563eb" stroke-width="2.6" marker-end="url(#arrowBlue)"/>
+  <line x1="570" y1="715" x2="524" y2="715" stroke="#2563eb" stroke-width="2.6" marker-end="url(#arrowBlue)"/>
+  <text x="545" y="703" text-anchor="middle" class="edge-label media-label">media</text>
+
+  <line x1="405" y1="650" x2="405" y2="369" stroke="#2563eb" stroke-width="2.6" marker-end="url(#arrowBlue)"/>
+  <text x="415" y="520" class="edge-label media-label">video + audio to display</text>
+
+  <!-- Future -->
+  <rect x="660" y="860" width="330" height="60" rx="14" fill="#f6f0ff" stroke="#9a7bff" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="825" y="884" text-anchor="middle" class="box-title" fill="#24133a">Future source adapters</text>
+  <text x="825" y="905" text-anchor="middle" class="box-sub" fill="#4c3a7a">Xbox · Steam/PC · Nintendo</text>
+  <line x1="825" y1="860" x2="825" y2="846" stroke="#8b5cf6" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arrowPurple)"/>
+
+  <text x="48" y="966" class="footer">Browser and bridge normally share a host; console traffic stays on the LAN. Optional Sony PSN sign-in and public PSN lookup are used only for Account ID assist; passwords never reach GameBridge.</text>
+  <text x="48" y="988" class="footer">The browser only speaks HTTP, WebSocket, and WebRTC. GameBridge is the only component that speaks the console's Remote Play protocols.</text>
+</svg>

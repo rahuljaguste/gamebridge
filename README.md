@@ -73,6 +73,9 @@ firmware, artwork, or keys extracted from Sony software by this project. See
   and packet stats. Latency is the round-trip time to the console: measured by
   Senkusha at stream start, then updated from the console's own
   connection-quality reports.
+- Phone/tablet play with an auto-shown on-screen controller (dual sticks,
+  D-pad, face buttons, shoulders/triggers, and menu buttons) and optional
+  device gyro/accelerometer motion with a Recenter control.
 - Screenshot and local pause/resume in the player bar. Pausing freezes this
   view only; the console keeps running.
 - After a console standby disconnect, **Wake and resume** wakes it from Rest
@@ -187,6 +190,10 @@ devices on the LAN use it, bind a LAN address and pass `--allow-remote`:
 gamebridge --bind 0.0.0.0:8080 --allow-remote
 ```
 
+When bound to a LAN address or `0.0.0.0`, the server prints the reachable LAN
+URLs and a scannable QR code in the startup banner. When bound to loopback, it
+prints the command needed to enable LAN access instead.
+
 That mode is open to anyone who can reach the port: they can start and stop
 streams, send controller input, and delete registrations. To require a token,
 create one and pass it at startup:
@@ -212,6 +219,22 @@ exposes the token and controller input to a passive sniffer; use a trusted
 network or put the bridge behind an HTTPS reverse proxy. One token is shared by
 all clients; there are no per-user accounts.
 
+A local reverse proxy also gives phones/tablets the secure context needed for
+WebRTC, Gamepad, and motion sensors. For example, keep GameBridge bound to the
+LAN with `--allow-remote` and proxy to it with Caddy so the original `Host` and
+`Origin` are preserved:
+
+```caddyfile
+gamebridge.lan {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+Use a certificate the device trusts (Caddy's internal CA installed on the
+phone/tablet, `mkcert`, or a public certificate for a real hostname). The
+default port 443 is supported after the guard's HTTPS-default-port fix. There
+is no built-in TLS listener yet.
+
 ## Using the UI
 
 The home screen shows your consoles as tiles. **Add console** is the first tile;
@@ -228,9 +251,35 @@ Console type is shown as a radio group, and **?** buttons beside the address
 and PIN fields explain where to find each value. Context messages and session
 notices appear as toasts in the bottom-right.
 
-While streaming, the video fills the window. Move the mouse or tap the video to
-show the floating bar with **Settings**, **Fullscreen**, and **Stop**; the bar
-auto-hides after a few seconds. Stop returns to the home screen.
+While streaming, the video fills the window. On desktop, move the mouse or tap
+the video to show the floating bar with **Settings**, **Fullscreen**, and
+**Stop**; the bar auto-hides after a few seconds. Stop returns to the home
+screen.
+
+### Phones and tablets
+
+Touch devices get an on-screen controller automatically. A dedicated **Menu**
+button at the bottom centre opens a full stream menu with pause/resume, volume,
+mute, screenshot, resync, settings, fullscreen, controls, rest mode, and stop.
+The **Controls** action and **Settings → Input → Touch controls** persist the
+choice. The desktop player bar is intentionally hidden during touch streaming,
+so it cannot cover a stick or button in fullscreen. The layout is
+landscape-first; in portrait the controls are hidden and a rotate hint appears
+while the stream keeps running.
+
+The video remains a two-finger touchpad in empty areas. **Settings → Input →
+Motion controls** enables phone gyro/accelerometer input; iPhone and iPad ask
+for sensor permission when you enable it or start the first session. Use
+**Recenter** in the on-screen menu (or Settings) to zero the current heading
+without changing tilt. Motion axes are experimental and may need a sign
+adjustment on some devices.
+
+Android Chrome via `adb reverse tcp:8080 tcp:8080` and `http://localhost:8080`
+gives a secure context for testing. For other devices, use an HTTPS reverse
+proxy with a certificate the phone/tablet trusts; see the LAN section below.
+GameBridge does not include a TLS listener yet. Plain HTTP to a LAN IP may show
+an insecure-connection warning and may block WebGL/Gamepad/sensor access or
+WebRTC depending on the browser.
 
 ## Registering a console
 
@@ -362,6 +411,21 @@ console present; stats update live.
 
 ## Architecture
 
+### Runtime topology
+
+![GameBridge runtime architecture](docs/architecture.png)
+
+Full-resolution image: [PNG](docs/architecture.png) · [SVG source](docs/architecture.svg)
+
+The browser only speaks HTTP, WebSocket, and WebRTC. GameBridge is the only
+component that speaks the console's Remote Play protocols, and console traffic
+stays on the LAN. The browser and GameBridge normally run on the same machine;
+for remote play over a LAN, the server is the opt-in boundary protected by
+`--allow-remote` plus optional token authentication. Optional PSN calls are the
+only external requests.
+
+### Code layout
+
 ```
 crates/chiaki-core/
   crypto/      RPCrypt (AES-128-CFB), GKCrypt (AES-128-ECB + GMAC), ECDH
@@ -389,6 +453,9 @@ cancellation tokens; there are no shared protocol mutexes.
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
+node --check crates/server/src/static/app.js
+node --check crates/server/src/static/motion-math.js
+node --test tools/test_motion_math.js
 ```
 
 The suite includes Chiaki's known-answer vectors for RPCrypt, GKCrypt, GMAC key
@@ -419,6 +486,20 @@ that exercises session → ctrl → Takion → encryption → launch spec → st
   microphone are not.
 - **Keyboard text entry** from the console is consumed but not surfaced in the
   browser.
+- **Phones/tablets need a secure context for full support.** Plain
+  `http://` on a LAN IP can block WebRTC, the Gamepad API, and motion sensors in
+  mobile browsers. Use `localhost` (Android port forwarding), or an HTTPS
+  reverse proxy with a certificate trusted by the device. Built-in TLS is not
+  included yet.
+- **Phone motion is experimental.** Gyro/accelerometer axis signs depend on the
+  device and grip. Recenter corrects the current heading but not axis mapping;
+  verify on your hardware and adjust the single sign constant in
+  `motion-math.js` if needed.
+- **iOS fullscreen and modal limitations.** iPhone Safari does not support
+  element fullscreen for `#video-wrap`; Settings and PIN/auth dialogs live
+  outside the fullscreen subtree and are not visible while fullscreen. Opening
+  Settings exits fullscreen, but a PIN prompt during fullscreen remains an
+  existing limitation.
 - **One active session** at a time and **localhost only** by default. Remote
   binds require `--allow-remote`, and should use `--auth-token` or
   `--auth-token-file` on any network with devices you do not control. There is
@@ -452,6 +533,21 @@ that exercises session → ctrl → Takion → encryption → launch spec → st
   console does not send one, stop and restart the stream.
 - **No audio in Safari**: Safari requires the page to be interacted with before
   starting audio; click the page once, then start the stream.
+- **PS button opens the macOS Games app**: macOS reserves the controller
+  Home/PS button before the browser sees it. When the server runs on macOS,
+  GameBridge can change this from **Settings → Input → Reserve the controller
+  PS button for GameBridge**. Alternatively, use **System Settings → Game
+  Controllers → Controller Shortcuts** to disable the shortcut, or on macOS 27+
+  add Chrome/Safari to the per-app Home Button Overrides. Terminal alternative:
+
+  ```sh
+  defaults write com.apple.GameController bluetoothPrefsMenuLongPressAction -integer 0
+  ```
+
+  Then log out and back in. Once macOS stops consuming the button, GameBridge
+  receives it as Gamepad API button 16. To restore the macOS behavior, delete
+  the key with `defaults delete com.apple.GameController
+  bluetoothPrefsMenuLongPressAction`.
 - **Console not found by Scan**: discovery uses UDP broadcast; some networks
   block it. Register by IP instead.
 - **“Remote Play on Console has crashed” (0x80108b15)**: this is the console's
