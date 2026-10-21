@@ -3,6 +3,13 @@
 All notable changes to GameBridge are documented here. The project follows
 semantic versioning; it is a Chiaki derivative and remains AGPL-3.0-only.
 
+## [0.8.2] - 2026-10-21
+
+### Security
+
+- Updated `rustls-webpki` to 0.103.16 and `webpki-roots` to 1.0.10 to address
+  RUSTSEC-2026-0382 and RUSTSEC-2026-0381 (distrusted emSign intermediates).
+
 ## [0.8.1] - 2026-10-21
 
 ### Documentation

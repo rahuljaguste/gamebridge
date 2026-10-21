@@ -81,11 +81,11 @@ compatible with that license; this file is an inventory, not legal advice.
 
 ## CDLA-Permissive-2.0
 
-- webpki-roots 1.0.9
+- webpki-roots 1.0.10
 
 ## ISC
 
-- rustls-webpki 0.103.15
+- rustls-webpki 0.103.16
 - untrusted 0.9.0
 
 ## MIT
