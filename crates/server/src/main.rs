@@ -5,12 +5,14 @@ mod adaptive;
 mod config;
 mod demo;
 mod manager;
+mod network;
 mod psn;
 mod routes;
 mod state;
 mod webrtc;
 
-use std::net::SocketAddr;
+use std::io::IsTerminal;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -180,9 +182,43 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(args.bind)
         .await
         .with_context(|| format!("failed to bind {}", args.bind))?;
+    let local_ip = if args.bind.ip().is_unspecified() {
+        if args.bind.is_ipv4() {
+            IpAddr::V4(Ipv4Addr::LOCALHOST)
+        } else {
+            IpAddr::V6(Ipv6Addr::LOCALHOST)
+        }
+    } else {
+        args.bind.ip()
+    };
+    let local_url = network::url_for(local_ip, args.bind.port());
+    let lan_urls = network::lan_urls(args.bind);
+
     println!();
     println!("  GameBridge v{}", env!("CARGO_PKG_VERSION"));
-    println!("  Open http://{}/", args.bind);
+    println!("  Open: {local_url}/");
+    if args.bind.ip().is_loopback() {
+        println!(
+            "  LAN:  off (use --bind 0.0.0.0:{} --allow-remote)",
+            args.bind.port()
+        );
+    } else if lan_urls.is_empty() {
+        println!("  LAN:  no active LAN address found");
+    } else {
+        for url in &lan_urls {
+            println!("  LAN:  {url}");
+        }
+        if std::io::stdout().is_terminal()
+            && let Some(qr) = network::terminal_qr(&lan_urls[0])
+        {
+            println!();
+            println!("  Scan to connect:");
+            for line in qr.lines() {
+                println!("  {line}");
+            }
+            println!();
+        }
+    }
     println!("  Log:  {}", log_path.display());
     println!(
         "  Auth: {}",

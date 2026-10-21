@@ -6,6 +6,7 @@ use axum::response::{IntoResponse, Response};
 
 const INDEX: &str = include_str!("../static/index.html");
 const APP_JS: &str = include_str!("../static/app.js");
+const MOTION_MATH_JS: &str = include_str!("../static/motion-math.js");
 const STYLE_CSS: &str = include_str!("../static/style.css");
 
 // The assets are embedded in the binary, so a restarted server always serves
@@ -34,6 +35,20 @@ pub async fn app_js() -> Response {
             (header::CACHE_CONTROL, NO_STORE),
         ],
         APP_JS,
+    )
+        .into_response()
+}
+
+pub async fn motion_math_js() -> Response {
+    (
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/javascript; charset=utf-8",
+            ),
+            (header::CACHE_CONTROL, NO_STORE),
+        ],
+        MOTION_MATH_JS,
     )
         .into_response()
 }
