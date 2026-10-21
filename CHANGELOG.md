@@ -3,6 +3,14 @@
 All notable changes to GameBridge are documented here. The project follows
 semantic versioning; it is a Chiaki derivative and remains AGPL-3.0-only.
 
+## [0.8.4] - 2026-10-21
+
+### Fixed
+
+- Release builds now install the cross-compilation target explicitly and pin
+  the toolchain to 1.97.1, fixing missing `core` errors on the Linux musl and
+  macOS Intel release jobs.
+
 ## [0.8.3] - 2026-10-21
 
 ### Documentation
