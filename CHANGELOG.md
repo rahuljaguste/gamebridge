@@ -3,6 +3,14 @@
 All notable changes to GameBridge are documented here. The project follows
 semantic versioning; it is a Chiaki derivative and remains AGPL-3.0-only.
 
+## [0.8.5] - 2026-10-21
+
+### Fixed
+
+- The Linux musl release binary is built as a conventional static executable
+  instead of static-PIE, avoiding a `_start` segfault seen with musl-gcc
+  wrappers in the release smoke test.
+
 ## [0.8.4] - 2026-10-21
 
 ### Fixed

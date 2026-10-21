@@ -84,10 +84,18 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install nasm -y --no-progress
 
-      - name: Build
+      - name: Build (musl static)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
         env:
           CC_x86_64_unknown_linux_musl: musl-gcc
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          # musl-gcc wrappers and static-PIE have produced _start segfaults;
+          # build a conventional static (non-PIE) executable instead.
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: "-C relocation-model=static"
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Build
+        if: matrix.target != 'x86_64-unknown-linux-musl'
         run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Check tag version

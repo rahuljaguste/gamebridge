@@ -410,7 +410,7 @@ dependencies = [
 
 [[package]]
 name = "chiaki-core"
-version = "0.8.4"
+version = "0.8.5"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -797,7 +797,7 @@ dependencies = [
 
 [[package]]
 name = "gamebridge-server"
-version = "0.8.4"
+version = "0.8.5"
 dependencies = [
  "anyhow",
  "async-trait",
