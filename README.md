@@ -588,4 +588,7 @@ for Chiaki, AMD FSR, and other attributions. A generated inventory of
 dependency licenses is in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 
 If you run a modified version of this program as a network service, the AGPL
-requires you to offer users the corresponding source code.
+requires you to offer users the corresponding source code. The in-app home
+screen, Settings drawer, and touch stream menu link to the project source and
+license; keep those links pointing at the Corresponding Source for any
+modified deployment.
