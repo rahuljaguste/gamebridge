@@ -62,9 +62,6 @@ fn has_complete_param_sets(scan: NalScan, codec: Codec) -> bool {
 pub struct VideoFrame {
     pub data: Bytes,
     pub frame_index: u16,
-    pub profile_index: u8,
-    pub width: u32,
-    pub height: u32,
     pub is_idr: bool,
     pub has_param_sets: bool,
 }
@@ -128,14 +125,15 @@ impl VideoReceiver {
             });
         }
 
-        let next =
-            self.frame_index_cur.is_none() || seq16_gt(frame_index, self.frame_index_cur.unwrap());
+        let next = self
+            .frame_index_cur
+            .is_none_or(|cur| seq16_gt(frame_index, cur));
         if next {
             self.processor.report_packet_stats(stats);
             if let Some(cur) = self.frame_index_cur
                 && self.frame_index_prev != Some(cur)
             {
-                self.flush(true, video_tx, takion).await;
+                self.flush(video_tx, takion);
             }
             let next_expected = self.frame_index_prev_complete.wrapping_add(1);
             if seq16_gt(frame_index, next_expected)
@@ -180,16 +178,11 @@ impl VideoReceiver {
             return;
         }
         if self.frame_index_cur != self.frame_index_prev && self.processor.flush_possible() {
-            self.flush(false, video_tx, takion).await;
+            self.flush(video_tx, takion);
         }
     }
 
-    async fn flush(
-        &mut self,
-        _forced: bool,
-        video_tx: &mpsc::Sender<VideoFrame>,
-        takion: &mpsc::Sender<TakionCommand>,
-    ) {
+    fn flush(&mut self, video_tx: &mpsc::Sender<VideoFrame>, takion: &mpsc::Sender<TakionCommand>) {
         let (result, data) = self.processor.flush();
         match result {
             FlushResult::Failed => return,
@@ -209,15 +202,10 @@ impl VideoReceiver {
         let Some(cur) = self.frame_index_cur else {
             return;
         };
-        let profile = self.profile_cur.unwrap_or(0);
-        let info = self.profiles.get(profile);
         let scan = scan_annex_b(&data, self.codec);
         let frame = VideoFrame {
             data: Bytes::from(data),
             frame_index: cur,
-            profile_index: profile as u8,
-            width: info.map(|p| p.width).unwrap_or(0),
-            height: info.map(|p| p.height).unwrap_or(0),
             is_idr: scan.is_idr,
             has_param_sets: has_complete_param_sets(scan, self.codec),
         };
@@ -288,26 +276,7 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn packet(frame: u16, unit: u16, total: u16, fec: u16, data_len: usize) -> AvPacket {
-        AvPacket {
-            packet_index: 0,
-            frame_index: frame,
-            uses_nalu_info_structs: false,
-            is_video: true,
-            is_haptics: false,
-            unit_index: unit,
-            units_in_frame_total: total,
-            units_in_frame_fec: fec,
-            codec: 3,
-            word_at_0x18: 0,
-            adaptive_stream_index: 0,
-            byte_at_0x2c: 0,
-            key_pos: 0,
-            data_offset: 0,
-            data_len,
-        }
-    }
+    use crate::test_support::av_packet as packet;
 
     #[test]
     fn h265_requires_vps_sps_and_pps_together() {

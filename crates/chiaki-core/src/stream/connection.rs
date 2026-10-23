@@ -524,10 +524,15 @@ fn encrypt_launch_spec(crypt: &RPCrypt, launch: &[u8]) -> std::result::Result<Ve
     Ok(encrypted)
 }
 
-async fn wait_for_bang(
+/// Wait for one protobuf message of `expected` type, failing on a console
+/// disconnect or the five-second setup deadline.
+async fn wait_for_message<T>(
     takion: &mut TakionHandle,
     cancel: &CancellationToken,
-) -> std::result::Result<protobuf::Bang, Error> {
+    expected: u32,
+    timeout_message: &'static str,
+    parse: fn(&[u8]) -> crate::error::Result<T>,
+) -> std::result::Result<T, Error> {
     timeout(Duration::from_secs(5), async {
         loop {
             tokio::select! {
@@ -536,7 +541,7 @@ async fn wait_for_bang(
                     let Some(event) = event else { return Err(Error::Disconnected) };
                     if let TakionEvent::MessageData { data_type: 0, payload } = event {
                         match protobuf::message_type(&payload) {
-                            Ok(protobuf::TYPE_BANG) => return protobuf::parse_bang(&payload),
+                            Ok(message_type) if message_type == expected => return parse(&payload),
                             Ok(protobuf::TYPE_DISCONNECT) => {
                                 let reason = protobuf::parse_disconnect_reason(&payload)?
                                     .unwrap_or_default();
@@ -552,42 +557,37 @@ async fn wait_for_bang(
     })
     .await
     .map_err(|_| {
-        tracing::warn!("stream: timed out waiting for BANG after the launch spec");
+        tracing::warn!("{timeout_message}");
         Error::Timeout
     })?
+}
+
+async fn wait_for_bang(
+    takion: &mut TakionHandle,
+    cancel: &CancellationToken,
+) -> std::result::Result<protobuf::Bang, Error> {
+    wait_for_message(
+        takion,
+        cancel,
+        protobuf::TYPE_BANG,
+        "stream: timed out waiting for BANG after the launch spec",
+        protobuf::parse_bang,
+    )
+    .await
 }
 
 async fn wait_for_stream_info(
     takion: &mut TakionHandle,
     cancel: &CancellationToken,
 ) -> std::result::Result<protobuf::StreamInfo, Error> {
-    timeout(Duration::from_secs(5), async {
-        loop {
-            tokio::select! {
-                _ = cancel.cancelled() => return Err(Error::Canceled),
-                event = takion.events.recv() => {
-                    let Some(event) = event else { return Err(Error::Disconnected) };
-                    if let TakionEvent::MessageData { data_type: 0, payload } = event {
-                        match protobuf::message_type(&payload) {
-                            Ok(protobuf::TYPE_STREAMINFO) => return protobuf::parse_stream_info(&payload),
-                            Ok(protobuf::TYPE_DISCONNECT) => {
-                                let reason = protobuf::parse_disconnect_reason(&payload)?
-                                    .unwrap_or_default();
-                                tracing::warn!("stream: console sent disconnect: {reason}");
-                                return Err(Error::Protocol(reason));
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-        }
-    })
+    wait_for_message(
+        takion,
+        cancel,
+        protobuf::TYPE_STREAMINFO,
+        "stream: timed out waiting for stream info",
+        protobuf::parse_stream_info,
+    )
     .await
-    .map_err(|_| {
-        tracing::warn!("stream: timed out waiting for stream info");
-        Error::Timeout
-    })?
 }
 
 fn spawn_feedback(
@@ -601,6 +601,7 @@ fn spawn_feedback(
         let mut history_seq: u16 = 0;
         let mut ticker = interval(Duration::from_millis(200));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut history = HistoryBuffer::new(16);
         loop {
             let changed = tokio::select! {
                 _ = cancel.cancelled() => break,
@@ -623,7 +624,7 @@ fn spawn_feedback(
                 state_seq = state_seq.wrapping_add(1);
             }
             if changed {
-                let mut history = HistoryBuffer::new(16);
+                history.clear();
                 collect_history(&prev, &now, &mut history);
                 if !history.is_empty() {
                     let payload = history.format();
@@ -711,10 +712,12 @@ async fn congestion_loop(
                     tracing::info!("stream: sending congestion feedback");
                 }
                 let (received, lost) = stats.get(true);
+                // The on-wire fields are 16-bit; saturate instead of wrapping
+                // a sustained burst into a bogus low loss report.
                 let _ = takion.try_send(TakionCommand::SendCongestion(CongestionPacket {
                     word_0: 0,
-                    received: received as u16,
-                    lost: lost as u16,
+                    received: received.min(u16::MAX as u64) as u16,
+                    lost: lost.min(u16::MAX as u64) as u16,
                 }));
             }
         }

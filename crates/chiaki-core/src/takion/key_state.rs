@@ -11,10 +11,6 @@ impl KeyState {
         Self { prev: 0 }
     }
 
-    pub fn prev(&self) -> u64 {
-        self.prev
-    }
-
     /// Reconstruct the 64-bit key position from the 32-bit low word carried
     /// in a packet. Only commit after the packet is authenticated.
     pub fn request_pos(&mut self, low: u32, commit: bool) -> u64 {

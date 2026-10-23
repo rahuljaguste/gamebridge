@@ -11,6 +11,7 @@
 //! service, requires the account's privacy setting to allow public search, and
 //! does not use a PSN password or token.
 
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -72,11 +73,17 @@ pub fn extract_code(input: &str) -> Result<String> {
 }
 
 fn client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
+    // Reuse one connection pool and TLS configuration across PSN calls.
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    if let Some(client) = CLIENT.get() {
+        return Ok(client.clone());
+    }
+    let client = reqwest::Client::builder()
         .user_agent(concat!("gamebridge/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(20))
         .build()
-        .context("could not create the HTTP client")
+        .context("could not create the HTTP client")?;
+    Ok(CLIENT.get_or_init(|| client).clone())
 }
 
 #[derive(serde::Deserialize)]

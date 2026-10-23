@@ -451,10 +451,6 @@ impl Session {
         std::mem::replace(&mut self.audio, mpsc::channel(1).1)
     }
 
-    pub fn set_input(&self, state: ControllerState) {
-        let _ = self.input.send(state);
-    }
-
     pub fn send_command(&self, command: SessionCommand) -> bool {
         self.commands.try_send(command).is_ok()
     }
@@ -465,13 +461,20 @@ impl Session {
                 return outcome;
             }
             if self.outcome.changed().await.is_err() {
-                return self.outcome.borrow().clone().unwrap_or_default();
+                // The supervisor exited without publishing an outcome (panic
+                // or abort). Surface it as an error instead of a clean stop.
+                return SessionOutcome {
+                    error: Some("session supervisor ended without an outcome".into()),
+                    ..Default::default()
+                };
             }
         }
     }
 
     pub async fn stop(mut self) {
-        let _ = self.commands.send(SessionCommand::Stop).await;
+        // Best effort: a full queue means the supervisor is already stuck, and
+        // cancellation below is what actually ends the session.
+        let _ = self.commands.try_send(SessionCommand::Stop);
         self.cancel.cancel();
         if let Some(mut join) = self.join.take() {
             let _ = timeout(Duration::from_secs(3), &mut join).await;
@@ -500,6 +503,17 @@ impl Drop for Session {
         } else {
             join.abort();
         }
+    }
+}
+
+/// Queue a ctrl command without letting a stalled console writer block the
+/// session supervisor (and therefore Stop handling) indefinitely.
+async fn send_ctrl(commands: &mpsc::Sender<CtrlCommand>, command: CtrlCommand) {
+    if timeout(Duration::from_secs(2), commands.send(command))
+        .await
+        .is_err()
+    {
+        tracing::warn!("ctrl command queue stalled; dropping command");
     }
 }
 
@@ -638,7 +652,7 @@ async fn run_supervisor(
                     match command {
                         Some(SessionCommand::Stop) | None => finish!(QuitReason::Stopped, None, None),
                         Some(SessionCommand::GotoBed) => {
-                            let _ = ctrl.commands.send(CtrlCommand::GotoBed).await;
+                            send_ctrl(&ctrl.commands, CtrlCommand::GotoBed).await;
                         }
                         _ => {}
                     }
@@ -665,14 +679,14 @@ async fn run_supervisor(
                                     command = commands.recv() => {
                                         match command {
                                             Some(SessionCommand::SubmitPin(pin)) => {
-                                                let _ = ctrl.commands.send(CtrlCommand::SetLoginPin(pin)).await;
+                                                send_ctrl(&ctrl.commands, CtrlCommand::SetLoginPin(pin)).await;
                                                 break;
                                             }
                                             Some(SessionCommand::Stop) | None => {
                                                 finish!(QuitReason::Stopped, None, None)
                                             }
                                             Some(SessionCommand::GotoBed) => {
-                                                let _ = ctrl.commands.send(CtrlCommand::GotoBed).await;
+                                                send_ctrl(&ctrl.commands, CtrlCommand::GotoBed).await;
                                             }
                                             _ => {}
                                         }
@@ -831,7 +845,7 @@ async fn run_supervisor(
                         let _ = stream_cmd_tx.try_send(StreamCommand::RequestKeyframe);
                     }
                     Some(SessionCommand::GotoBed) => {
-                        let _ = ctrl.commands.send(CtrlCommand::GotoBed).await;
+                        send_ctrl(&ctrl.commands, CtrlCommand::GotoBed).await;
                     }
                     Some(SessionCommand::SubmitPin(_)) => {}
                     Some(SessionCommand::Stop) | None => {

@@ -187,7 +187,6 @@ const state = {
   mouse: { dx: 0, dy: 0, left: false, right: false, locked: false },
   touches: new Map(),
   touchSeq: 1,
-  padIndex: null,
   streaming: false,
   detachedActive: false,
   iceTimer: null,
@@ -209,11 +208,7 @@ const state = {
     latches: new Map(),
     left: { x: 0, y: 0, active: false, pointerId: null, origin: null },
     right: { x: 0, y: 0, active: false, pointerId: null, origin: null },
-    dpad: { up: false, down: false, left: false, right: false, pointerId: null, rect: null, origin: null },
-    triggers: {
-      l2: { active: false, pointerId: null, until: 0 },
-      r2: { active: false, pointerId: null, until: 0 },
-    },
+    dpad: { up: false, down: false, left: false, right: false, pointerId: null, origin: null },
   },
   motion: {
     enabled: true,
@@ -1100,7 +1095,6 @@ function updateFullscreenButton() {
   const button = $("fullscreen-btn");
   if (!button) return;
   const active = Boolean(document.fullscreenElement);
-  button.textContent = active ? "Exit fullscreen" : "Fullscreen";
   button.title = active ? "Exit fullscreen" : "Enter fullscreen";
   button.setAttribute("aria-label", active ? "Exit fullscreen" : "Enter fullscreen");
 }
@@ -1169,22 +1163,39 @@ function dismissToast() {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
-  const text = await response.text();
-  let data = null;
-  try { data = text ? JSON.parse(text) : null; } catch { data = text; }
-  if (!response.ok) {
-    const error = new Error((data && data.error) || `HTTP ${response.status}`);
-    error.status = response.status;
-    if (response.status === 401 && path !== "/api/auth/login") {
-      showAuthModal();
+  const { timeoutMs, ...fetchOptions } = options;
+  const controller = timeoutMs ? new AbortController() : null;
+  const timer = controller
+    ? setTimeout(() => controller.abort(), timeoutMs)
+    : null;
+  if (controller) fetchOptions.signal = controller.signal;
+  try {
+    const response = await fetch(path, {
+      headers: { "Content-Type": "application/json" },
+      ...fetchOptions,
+    });
+    const text = await response.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+    if (!response.ok) {
+      const error = new Error((data && data.error) || `HTTP ${response.status}`);
+      error.status = response.status;
+      if (response.status === 401 && path !== "/api/auth/login") {
+        showAuthModal();
+      }
+      throw error;
+    }
+    return data;
+  } catch (error) {
+    if (controller && controller.signal.aborted) {
+      const timeout = new Error("The server did not respond in time");
+      timeout.status = 0;
+      throw timeout;
     }
     throw error;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
-  return data;
 }
 
 function showAuthModal(message = "") {
@@ -1330,11 +1341,7 @@ function primeContextToast() {
 }
 
 function hideContextToast() {
-  if (toastKind !== "context") return;
-  if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = null;
-  toastKind = "";
-  toastEl.classList.add("hidden");
+  if (toastKind === "context") dismissToast();
 }
 
 let playerBarTimer = null;
@@ -1376,11 +1383,10 @@ function settingsIsOpen() {
 
 function openSettings(tab = "stream") {
   if (addIsOpen()) closeAddConsole({ restoreFocus: false, notify: false });
-  if (document.fullscreenElement) {
-    ignorePromiseRejection(document.exitFullscreen?.());
-  }
   resetTouchControls();
-  hideContextToast();
+  // A transient stream-start or context toast would otherwise sit above the
+  // drawer in fullscreen and obscure its controls.
+  dismissToast();
   const overlay = $("settings-overlay");
   if (!overlay.classList.contains("open")) {
     settingsReturnFocus = document.activeElement instanceof HTMLElement
@@ -1643,10 +1649,13 @@ function targetLabel(target) {
 let detectTimer = null;
 let detectSeq = 0;
 
+function setStatusLine(statusId, textId, text, kind = "") {
+  $(statusId).className = "detect-status" + (kind ? " " + kind : "");
+  $(textId).textContent = text;
+}
+
 function setDetectStatus(text, kind = "") {
-  const status = $("reg-target-status");
-  status.className = "detect-status" + (kind ? " " + kind : "");
-  $("reg-target-text").textContent = text;
+  setStatusLine("reg-target-status", "reg-target-text", text, kind);
 }
 
 function targetRadios() {
@@ -1767,11 +1776,11 @@ function forgetSavedPsnAccount() {
 $("reg-account-clear").addEventListener("click", forgetSavedPsnAccount);
 
 let psnCodeTimer = null;
+let psnPopupTimer = null;
 let psnCodeSeq = 0;
 
 function setPsnCodeStatus(text, kind = "") {
-  $("psn-code-status").className = "detect-status" + (kind ? " " + kind : "");
-  $("psn-code-text").textContent = text;
+  setStatusLine("psn-code-status", "psn-code-text", text, kind);
 }
 
 function isPsnRedirect(value) {
@@ -1864,17 +1873,19 @@ $("psn-login-link").addEventListener("click", (event) => {
   popup.focus();
   setPsnCodeStatus("Sign in, then copy the full URL from the popup's address bar and paste it below.");
   $("reg-psn-code").focus({ preventScroll: true });
-  const timer = setInterval(() => {
+  // One poller per sign-in window; repeated clicks must not stack intervals.
+  if (psnPopupTimer !== null) clearInterval(psnPopupTimer);
+  psnPopupTimer = setInterval(() => {
     if (!popup.closed) return;
-    clearInterval(timer);
+    clearInterval(psnPopupTimer);
+    psnPopupTimer = null;
     setPsnCodeStatus("Sign-in window closed. Paste the redirect URL or code below.");
     $("reg-psn-code").focus({ preventScroll: true });
   }, 1000);
 });
 
 function setPsnLookupStatus(text, kind = "") {
-  $("psn-lookup-status").className = "detect-status" + (kind ? " " + kind : "");
-  $("psn-lookup-text").textContent = text;
+  setStatusLine("psn-lookup-status", "psn-lookup-text", text, kind);
 }
 
 async function publicLookupPsn() {
@@ -1885,6 +1896,8 @@ async function publicLookupPsn() {
     return;
   }
   const button = $("psn-lookup-btn");
+  // Enter bypasses the disabled state; never run two lookups at once.
+  if (button.disabled) return;
   button.disabled = true;
   setPsnLookupStatus("Looking up PSN account…", "busy");
   try {
@@ -2039,39 +2052,31 @@ $("register-form").addEventListener("submit", async (event) => {
 
 /* ── Session ───────────────────────────────────────────────────────────── */
 
-async function startSession(host) {
-  if (state.starting || state.pc || state.sessionId || state.detachedActive) {
+function hasActiveSession() {
+  return Boolean(state.pc || state.sessionId || state.detachedActive);
+}
+
+async function beginSession({ hostId, overlayText, failureLabel, start }) {
+  if (state.starting || hasActiveSession()) {
     toast("A session is already active", true);
     return;
   }
   primeMotionForStart();
   state.starting = true;
-  state.hostId = host.id;
+  state.hostId = hostId;
   state.resumePending = null;
   state.resumeTarget = null;
   state.paused = false;
   $("resume-panel").classList.add("hidden");
-  $("pause-btn").textContent = "Pause";
+  setPauseUi(false);
   const epoch = ++state.startEpoch;
   closeAddConsole({ notify: false });
   showPlayer();
-  showOverlay("Connecting…", "Requesting a session. If the console is asleep, GameBridge wakes it first.");
+  showOverlay("Connecting…", overlayText);
   showPlayerBar(false);
   setStatus("Starting", "");
   try {
-    const bitrate = parseInt($("opt-bitrate").value, 10);
-    const response = await api("/api/session/start", {
-      method: "POST",
-      body: JSON.stringify({
-        host_id: host.id,
-        resolution: $("opt-resolution").value,
-        fps: parseInt($("opt-fps").value, 10),
-        bitrate_kbps: Number.isFinite(bitrate) ? bitrate : null,
-        codec: $("opt-codec").value,
-        adaptive_bitrate: $("opt-adaptive").checked,
-        enable_dualsense: $("opt-dualsense").checked,
-      }),
-    });
+    const response = await start();
     if (epoch !== state.startEpoch) {
       // The user stopped or a newer start superseded this response. Release
       // the console session the server just created.
@@ -2080,9 +2085,10 @@ async function startSession(host) {
     }
     const sessionId = response.session_id;
     state.sessionId = sessionId;
-    state.activeBitrate = Number.isFinite(response.bitrate_kbps) && response.bitrate_kbps > 0
-      ? response.bitrate_kbps
-      : null;
+    state.activeBitrate =
+      Number.isFinite(response.bitrate_kbps) && response.bitrate_kbps > 0
+        ? response.bitrate_kbps
+        : null;
     renderStats();
     if (response.adaptive_stepped_down) {
       toast(`Adaptive bitrate: starting at ${formatMbps(response.bitrate_kbps)} after recent packet loss`);
@@ -2097,64 +2103,49 @@ async function startSession(host) {
     if (epoch !== state.startEpoch) return;
     // A WebRTC setup failure after the start response still owns a console
     // session. Release it now instead of leaving the manager to time out.
-    if (state.sessionId) {
+    // A timed-out request has no session id, but the server may have created
+    // one before the client gave up; the stop endpoint is idempotent.
+    if (state.sessionId || e.status === 0) {
       try {
         await api("/api/session/stop", { method: "POST", body: "{}" });
       } catch {}
     }
     await cleanupSession(false);
-    showHomeNotice("Could not start", e.message);
+    showHomeNotice(failureLabel, e.message);
   } finally {
     if (epoch === state.startEpoch) state.starting = false;
   }
 }
 
+async function startSession(host) {
+  const bitrate = parseInt($("opt-bitrate").value, 10);
+  await beginSession({
+    hostId: host.id,
+    overlayText: "Requesting a session. If the console is asleep, GameBridge wakes it first.",
+    failureLabel: "Could not start",
+    start: () => api("/api/session/start", {
+      method: "POST",
+      timeoutMs: 45000,
+      body: JSON.stringify({
+        host_id: host.id,
+        resolution: $("opt-resolution").value,
+        fps: parseInt($("opt-fps").value, 10),
+        bitrate_kbps: Number.isFinite(bitrate) ? bitrate : null,
+        codec: $("opt-codec").value,
+        adaptive_bitrate: $("opt-adaptive").checked,
+        enable_dualsense: $("opt-dualsense").checked,
+      }),
+    }),
+  });
+}
+
 async function startDemo() {
-  if (state.starting || state.pc || state.sessionId || state.detachedActive) {
-    toast("A session is already active", true);
-    return;
-  }
-  primeMotionForStart();
-  state.starting = true;
-  state.hostId = null;
-  state.resumePending = null;
-  state.resumeTarget = null;
-  state.paused = false;
-  $("resume-panel").classList.add("hidden");
-  $("pause-btn").textContent = "Pause";
-  const epoch = ++state.startEpoch;
-  closeAddConsole({ notify: false });
-  showPlayer();
-  showOverlay("Connecting…", "Opening a local H.264 test stream.");
-  showPlayerBar(false);
-  setStatus("Starting", "");
-  try {
-    const response = await api("/api/demo/start", { method: "POST" });
-    if (epoch !== state.startEpoch) {
-      api("/api/session/stop", { method: "POST", body: "{}" }).catch(() => {});
-      return;
-    }
-    const sessionId = response.session_id;
-    state.sessionId = sessionId;
-    state.activeBitrate = null;
-    renderStats();
-    connectSocket();
-    setBusy(true);
-    await setupPeer(response.offer, sessionId);
-    if (state.sessionId !== sessionId || epoch !== state.startEpoch) return;
-    startInputLoop();
-  } catch (e) {
-    if (epoch !== state.startEpoch) return;
-    if (state.sessionId) {
-      try {
-        await api("/api/session/stop", { method: "POST", body: "{}" });
-      } catch {}
-    }
-    await cleanupSession(false);
-    showHomeNotice("Could not start demo", e.message);
-  } finally {
-    if (epoch === state.startEpoch) state.starting = false;
-  }
+  await beginSession({
+    hostId: null,
+    overlayText: "Opening a local H.264 test stream.",
+    failureLabel: "Could not start demo",
+    start: () => api("/api/demo/start", { method: "POST" }),
+  });
 }
 
 function stopDetachedPoll() {
@@ -2167,6 +2158,8 @@ function stopDetachedPoll() {
 function startDetachedPoll() {
   if (detachedTimer) return;
   detachedTimer = setInterval(async () => {
+    // No point polling a server while the tab is in the background.
+    if (document.hidden) return;
     try {
       const status = await api("/api/status");
       if (!status.active) {
@@ -2229,12 +2222,18 @@ async function setupPeer(offer, sessionId) {
       clearIceRestart();
       state.iceAttempts = 0;
       state.iceGaveUp = false;
-      hideOverlay();
-      setStatus("Live", "live");
       state.streaming = true;
       hintOverlay.classList.add("hidden");
       syncTouchControlsUi();
       startMotionIfEnabled();
+      // A pause pressed while connecting must survive the connection.
+      if (state.paused) {
+        setPauseUi(true);
+        setStatus("Paused", "");
+      } else {
+        hideOverlay();
+        setStatus("Live", "live");
+      }
       if (state.touch.enabled && state.ui.touchCapable) {
         hidePlayerBar();
       } else {
@@ -2257,19 +2256,30 @@ async function setupPeer(offer, sessionId) {
       setStatus(s, "");
     }
   };
+  if (!(await negotiateAnswer(pc, sessionId, offer, alive, abandon))) return;
+  video.focus();
+}
+
+// Apply an offer and post the gathered answer. Returns false when the
+// session was replaced mid-negotiation.
+async function negotiateAnswer(pc, sessionId, offer, alive, abandon) {
+  const stale = () => {
+    if (abandon) abandon();
+    return false;
+  };
   await pc.setRemoteDescription({ type: "offer", sdp: offer.sdp });
-  if (!alive()) { abandon(); return; }
+  if (!alive()) return stale();
   const answer = await pc.createAnswer();
-  if (!alive()) { abandon(); return; }
+  if (!alive()) return stale();
   await pc.setLocalDescription(answer);
-  if (!alive()) { abandon(); return; }
+  if (!alive()) return stale();
   await waitForIceGathering(pc);
-  if (!alive()) { abandon(); return; }
+  if (!alive()) return stale();
   await api("/api/session/answer", {
     method: "POST",
     body: JSON.stringify({ session_id: sessionId, sdp: pc.localDescription.sdp }),
   });
-  video.focus();
+  return true;
 }
 
 function waitForIceGathering(pc) {
@@ -2341,18 +2351,7 @@ async function restartIce(pc, sessionId) {
       body: JSON.stringify({ session_id: sessionId }),
     });
     if (!alive()) return;
-    await pc.setRemoteDescription({ type: "offer", sdp: result.offer.sdp });
-    if (!alive()) return;
-    const answer = await pc.createAnswer();
-    if (!alive()) return;
-    await pc.setLocalDescription(answer);
-    if (!alive()) return;
-    await waitForIceGathering(pc);
-    if (!alive()) return;
-    await api("/api/session/answer", {
-      method: "POST",
-      body: JSON.stringify({ session_id: sessionId, sdp: pc.localDescription.sdp }),
-    });
+    if (!(await negotiateAnswer(pc, sessionId, result.offer, alive, null))) return;
   } catch (e) {
     if (!alive()) return;
     if (state.iceAttempts < ICE_RESTART_MAX) {
@@ -2521,7 +2520,10 @@ $("pin-form").addEventListener("submit", (event) => {
   event.preventDefault();
   const pin = $("pin-input").value.trim();
   if (!pin) return;
-  sendWs({ type: "pin", pin });
+  if (!sendWs({ type: "pin", pin })) {
+    toast("Not connected to the server; try again in a moment.", true);
+    return;
+  }
   pinModal.classList.add("hidden");
   loginPinReveal.reset();
 });
@@ -2563,7 +2565,7 @@ async function cleanupSession(resetUi) {
   state.resumePending = null;
   state.resumeTarget = null;
   closeTouchMenu({ restoreFocus: false });
-  $("pause-btn").textContent = "Pause";
+  setPauseUi(false);
   $("resume-panel").classList.add("hidden");
   clearRumble();
   if (state.iceStopTimer) {
@@ -2897,7 +2899,7 @@ window.addEventListener("keydown", (event) => {
   // Controller keys are only meaningful while a stream is live, and must
   // never steal keys from the PIN modal or any text field (Backspace,
   // Space, Tab, Enter and the mapped letters must keep working).
-  if (!state.streaming) return;
+  if (!state.streaming || state.paused) return;
   if (settingsIsOpen()) return;
   if (!pinModal.classList.contains("hidden")) return;
   if (isEditableTarget(event.target)) return;
@@ -2923,7 +2925,9 @@ window.addEventListener("keyup", (event) => {
 window.addEventListener("blur", () => {
   state.keyboard.clear();
   resetTouchControls();
-  if (state.streaming) sendInput(true);
+  state.mouse.left = false;
+  state.mouse.right = false;
+  if (state.streaming && !state.paused) sendInput(true);
 });
 
 document.addEventListener("visibilitychange", () => {
@@ -3025,24 +3029,22 @@ function touchMenuIsOpen() {
 }
 
 function updateTouchMenuState() {
-  const status = $("conn-status");
-  const menuState = $("touch-menu-state");
-  menuState.textContent = status.textContent;
-  menuState.className = "status-pill"
-    + (status.classList.contains("live") ? " live" : "")
-    + (status.classList.contains("bad") ? " bad" : "");
-  $("touch-menu-stats").textContent = $("stats").textContent;
   touchMenuVolume.value = String(Math.round(audio.volume * 100));
 
+  const pauseButton = $("pause-btn");
+  const fullscreenButton = $("fullscreen-btn");
   const labels = {
-    pause: $("pause-btn").textContent,
+    pause: pauseButton.getAttribute("aria-label") || "Pause",
     mute: audio.muted ? "Unmute" : "Mute",
-    fullscreen: $("fullscreen-btn").textContent,
+    fullscreen: fullscreenButton.getAttribute("aria-label") || "Fullscreen",
     controls: state.touch.enabled ? "Hide controls" : "Show controls",
   };
+  const paused = pauseButton.classList.contains("paused");
   for (const button of touchMenuEl.querySelectorAll("[data-menu-action]")) {
     const action = button.dataset.menuAction;
-    if (labels[action]) button.textContent = labels[action];
+    const label = button.querySelector("[data-menu-label]");
+    if (labels[action] && label) label.textContent = labels[action];
+    if (action === "pause") button.classList.toggle("paused", paused);
     if (action === "controls") {
       button.disabled = false;
       continue;
@@ -3106,8 +3108,9 @@ function syncTouchControlsUi() {
   if (toggle) {
     toggle.classList.toggle("hidden", !state.ui.touchCapable && !state.touch.enabled);
     toggle.setAttribute("aria-pressed", String(state.touch.enabled));
-    toggle.textContent = state.touch.enabled ? "Hide controls" : "Show controls";
-    toggle.title = state.touch.enabled ? "Hide on-screen touch controls" : "Show on-screen touch controls";
+    const label = state.touch.enabled ? "Hide on-screen touch controls" : "Show on-screen touch controls";
+    toggle.setAttribute("aria-label", label);
+    toggle.title = label;
   }
   syncTouchMenuButton();
 }
@@ -3194,7 +3197,6 @@ function resetTouchControls() {
     try { dpadEl.releasePointerCapture(state.touch.dpad.pointerId); } catch {}
   }
   state.touch.dpad.pointerId = null;
-  state.touch.dpad.rect = null;
   state.touch.dpad.origin = null;
   state.touch.dpad.up = false;
   state.touch.dpad.down = false;
@@ -3204,11 +3206,6 @@ function resetTouchControls() {
     for (const button of dpadEl.querySelectorAll("[data-dpad]")) button.classList.remove("pressed");
   }
 
-  for (const which of ["l2", "r2"]) {
-    state.touch.triggers[which].active = false;
-    state.touch.triggers[which].pointerId = null;
-    state.touch.triggers[which].until = 0;
-  }
   touchControlsEl?.querySelectorAll(".pressed").forEach((element) => element.classList.remove("pressed"));
 }
 
@@ -3260,7 +3257,9 @@ function motionSupported() {
 }
 
 function phoneSensorsAvailable() {
-  return isTouchCapable() && motionSupported();
+  // `ui.touchCapable` is cached at boot; querying matchMedia here would run
+  // on every 60 Hz input tick.
+  return state.ui.touchCapable && motionSupported();
 }
 
 function motionNeedsPermission() {
@@ -3502,9 +3501,12 @@ function updateMotionStatus() {
 }
 
 function sendInput(force = false) {
+  // While paused no input is forwarded. The pause path sends one explicit
+  // neutral frame instead, so held keys/sticks are released on the console.
+  if (state.paused) return;
   if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
   const pad = activeGamepad();
-  const buttons = keyboardButtons() | gamepadButtons() | touchButtons();
+  const buttons = keyboardButtons() | gamepadButtons(pad) | touchButtons();
   const l2 = Math.max(
     touchTrigger("l2"),
     keyboardTrigger("l2"),
@@ -3566,7 +3568,30 @@ function sendInput(force = false) {
   if (!force && json === state.lastInputJson && now - state.lastInputAt < 100) return;
   state.lastInputJson = json;
   state.lastInputAt = now;
-  sendWs(payload);
+  // Send the serialized frame directly; re-stringifying the object would
+  // double the per-tick JSON work on the 60 Hz input path.
+  state.ws.send(json);
+}
+
+// Release everything currently held. Used when pausing, because the console
+// would otherwise keep the last pressed key/stick until the user resumes.
+function sendNeutralInput() {
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+  const payload = {
+    type: "input",
+    buttons: 0,
+    l2: 0,
+    r2: 0,
+    lx: 0,
+    ly: 0,
+    rx: 0,
+    ry: 0,
+    touches: [{ id: -1, x: 0, y: 0 }, { id: -1, x: 0, y: 0 }],
+  };
+  state.ws.send(JSON.stringify(payload));
+  // Force the next live frame past the dedupe check.
+  state.lastInputJson = "";
+  state.lastInputAt = 0;
 }
 
 function sendWs(payload) {
@@ -3585,17 +3610,17 @@ function activeGamepad() {
   return null;
 }
 
-function gamepadButtons() {
-  const pad = activeGamepad();
+const GAMEPAD_BUTTON_MAP = [
+  [0, B.CROSS], [1, B.MOON], [2, B.BOX], [3, B.PYRAMID],
+  [4, B.L1], [5, B.R1], [8, B.SHARE], [9, B.OPTIONS],
+  [10, B.L3], [11, B.R3], [12, B.DPAD_UP], [13, B.DPAD_DOWN],
+  [14, B.DPAD_LEFT], [15, B.DPAD_RIGHT],
+];
+
+function gamepadButtons(pad) {
   if (!pad) return 0;
   let mask = 0;
-  const map = [
-    [0, B.CROSS], [1, B.MOON], [2, B.BOX], [3, B.PYRAMID],
-    [4, B.L1], [5, B.R1], [8, B.SHARE], [9, B.OPTIONS],
-    [10, B.L3], [11, B.R3], [12, B.DPAD_UP], [13, B.DPAD_DOWN],
-    [14, B.DPAD_LEFT], [15, B.DPAD_RIGHT],
-  ];
-  for (const [index, bit] of map) {
+  for (const [index, bit] of GAMEPAD_BUTTON_MAP) {
     if (pad.buttons[index] && pad.buttons[index].pressed) mask |= bit;
   }
   if (pad.buttons[16] && pad.buttons[16].pressed) mask |= B.PS;
@@ -3686,24 +3711,47 @@ function captureScreenshot() {
   }, "image/png");
 }
 
+function setPauseUi(paused) {
+  const button = $("pause-btn");
+  if (button) {
+    button.classList.toggle("paused", paused);
+    const label = paused ? "Resume" : "Pause";
+    button.setAttribute("aria-label", label);
+    button.title = paused
+      ? "Resume the live view"
+      : "Pause this view only; the console keeps running";
+  }
+  const menuButton = touchMenuEl?.querySelector('[data-menu-action="pause"]');
+  menuButton?.classList.toggle("paused", paused);
+}
+
 function setPaused(paused) {
   if (paused) {
-    state.paused = true;
+    // Release held inputs before gating the loop: resetTouchControls clears
+    // on-screen controls, then the local keyboard/mouse/touchpad state is
+    // cleared so the neutral frame carries no stale press.
     resetTouchControls();
-    if (state.streaming) sendInput(true);
+    state.keyboard.clear();
+    state.touches.clear();
+    state.mouse.left = false;
+    state.mouse.right = false;
+    state.mouse.dx = 0;
+    state.mouse.dy = 0;
+    if (state.streaming) sendNeutralInput();
+    state.paused = true;
     syncTouchControlsUi();
     // Keep the media element playing behind the overlay. Pausing it can stop
     // the browser from draining WebRTC, which backs up the server's video
     // queue and produces IDR churn. Mute and cover the view instead.
     applyAudioState();
-    $("pause-btn").textContent = "Resume";
+    setPauseUi(true);
     setStatus("Paused", "");
     showOverlay("Paused", "The console keeps running. Press Resume to return to live video.");
     return;
   }
   state.paused = false;
   applyAudioState();
-  $("pause-btn").textContent = "Pause";
+  setPauseUi(false);
   hideOverlay();
   syncTouchControlsUi();
   setStatus(state.streaming ? "Live" : "Connected", state.streaming ? "live" : "");
@@ -4065,7 +4113,6 @@ function onDpadDown(event) {
   event.stopPropagation();
   const origin = beginTouchOrigin(dpadEl, event);
   state.touch.dpad.pointerId = event.pointerId;
-  state.touch.dpad.rect = origin.rect;
   state.touch.dpad.origin = origin;
   try { dpadEl.setPointerCapture(event.pointerId); } catch {}
   updateDpadFromLocal(origin.x, origin.y, origin.rect);
@@ -4085,7 +4132,6 @@ function endDpadForPointer(pointerId) {
   if (state.touch.dpad.pointerId !== pointerId) return false;
   try { dpadEl.releasePointerCapture(pointerId); } catch {}
   state.touch.dpad.pointerId = null;
-  state.touch.dpad.rect = null;
   state.touch.dpad.origin = null;
   setDpadBits(false, false, false, false);
   return true;
@@ -4599,7 +4645,9 @@ $("fullscreen-btn").addEventListener("click", () => {
   if (document.fullscreenElement) {
     ignorePromiseRejection(document.exitFullscreen());
   } else {
-    ignorePromiseRejection(videoWrap.requestFullscreen?.());
+    // Fullscreen the whole document, not just the video container, so the
+    // Settings, PIN, and authentication dialogs remain visible in fullscreen.
+    ignorePromiseRejection(document.documentElement.requestFullscreen?.());
   }
 });
 
@@ -4720,7 +4768,6 @@ showHome();
 updateOrientationState();
 updateMotionStatus();
 primeInsecureWarning();
-setBusy(false);
 setBusy(false);
 loadSavedPsnAccount();
 startApp();

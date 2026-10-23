@@ -495,11 +495,11 @@ that exercises session → ctrl → Takion → encryption → launch spec → st
   device and grip. Recenter corrects the current heading but not axis mapping;
   verify on your hardware and adjust the single sign constant in
   `motion-math.js` if needed.
-- **iOS fullscreen and modal limitations.** iPhone Safari does not support
-  element fullscreen for `#video-wrap`; Settings and PIN/auth dialogs live
-  outside the fullscreen subtree and are not visible while fullscreen. Opening
-  Settings exits fullscreen, but a PIN prompt during fullscreen remains an
-  existing limitation.
+- **iOS fullscreen limitation.** iPhone Safari does not support Element
+  Fullscreen, so the Fullscreen button may be unavailable there; use landscape
+  or Add to Home Screen. Elsewhere the whole page enters fullscreen, keeping
+  Settings, PIN, authentication, and stream dialogs visible. Only Stop or an
+  explicit Exit fullscreen action leaves fullscreen.
 - **One active session** at a time and **localhost only** by default. Remote
   binds require `--allow-remote`, and should use `--auth-token` or
   `--auth-token-file` on any network with devices you do not control. There is

@@ -130,12 +130,6 @@ impl<'a> Reader<'a> {
         };
         Ok(Some((field, value)))
     }
-
-    /// Skip all remaining fields, validating the wire format.
-    pub fn skip_all(&mut self) -> Result<()> {
-        while self.next_field()?.is_some() {}
-        Ok(())
-    }
 }
 
 pub fn as_u32(value: Value<'_>) -> Result<u32> {

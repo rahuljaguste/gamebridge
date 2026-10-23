@@ -47,13 +47,11 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     let (mut events, replay) = state.subscribe_with_replay();
     state.ws_client_connected();
     let _client = WsClientGuard(state.clone());
-    let _ = socket
-        .send(Message::Text(
-            serde_json::to_string(&ServerEvent::SessionStarted { session_id })
-                .unwrap_or_default()
-                .into(),
-        ))
-        .await;
+    let Ok(started) = serde_json::to_string(&ServerEvent::SessionStarted { session_id }) else {
+        tracing::error!("could not serialize the session-started event");
+        return;
+    };
+    let _ = socket.send(Message::Text(started.into())).await;
     // Replay what happened while the browser was gathering ICE candidates,
     // notably a PIN request or the current phase.
     for event in replay {

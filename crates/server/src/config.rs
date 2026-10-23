@@ -33,24 +33,22 @@ impl StoredHost {
     }
 
     pub fn regist_key_bytes(&self) -> Result<[u8; 16]> {
-        let bytes = hex::decode(&self.regist_key).context("invalid regist key")?;
-        let mut out = [0u8; 16];
-        if bytes.len() != 16 {
-            anyhow::bail!("regist key must be 16 bytes");
-        }
-        out.copy_from_slice(&bytes);
-        Ok(out)
+        hex16(&self.regist_key, "regist key")
     }
 
     pub fn morning_bytes(&self) -> Result<[u8; 16]> {
-        let bytes = hex::decode(&self.morning).context("invalid morning")?;
-        let mut out = [0u8; 16];
-        if bytes.len() != 16 {
-            anyhow::bail!("morning must be 16 bytes");
-        }
-        out.copy_from_slice(&bytes);
-        Ok(out)
+        hex16(&self.morning, "morning")
     }
+}
+
+fn hex16(value: &str, field: &str) -> Result<[u8; 16]> {
+    let bytes = hex::decode(value).with_context(|| format!("invalid {field}"))?;
+    if bytes.len() != 16 {
+        anyhow::bail!("{field} must be 16 bytes");
+    }
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&bytes);
+    Ok(out)
 }
 
 pub fn target_string(target: Target) -> &'static str {
@@ -204,13 +202,17 @@ impl ConfigStore {
     }
 
     pub fn hosts(&self) -> Vec<StoredHost> {
-        self.inner.lock().unwrap().hosts.clone()
+        self.inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .hosts
+            .clone()
     }
 
     pub fn get(&self, id: &str) -> Option<StoredHost> {
         self.inner
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .hosts
             .iter()
             .find(|h| h.id == id)
@@ -218,7 +220,7 @@ impl ConfigStore {
     }
 
     pub fn add(&self, host: StoredHost) -> Result<()> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         inner
             .hosts
             .retain(|h| h.id != host.id && h.host != host.host);
@@ -227,7 +229,7 @@ impl ConfigStore {
     }
 
     pub fn remove(&self, id: &str) -> Result<bool> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         let before = inner.hosts.len();
         inner.hosts.retain(|h| h.id != id);
         let removed = inner.hosts.len() != before;
@@ -242,7 +244,7 @@ impl ConfigStore {
     pub fn adaptive(&self, host_id: &str) -> Option<AdaptiveRecord> {
         self.inner
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .adaptive
             .iter()
             .find(|a| a.host_id == host_id)
@@ -250,7 +252,7 @@ impl ConfigStore {
     }
 
     pub fn set_adaptive(&self, record: AdaptiveRecord) -> Result<()> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         inner.adaptive.retain(|a| a.host_id != record.host_id);
         inner.adaptive.push(record);
         self.save(&inner)

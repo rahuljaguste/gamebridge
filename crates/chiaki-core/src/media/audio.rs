@@ -16,7 +16,6 @@ pub struct AudioFormat {
     pub bits: u8,
     pub sample_rate: u32,
     pub frame_size: u32,
-    pub unknown: u32,
 }
 
 impl AudioFormat {
@@ -29,7 +28,6 @@ impl AudioFormat {
             bits: header[1],
             sample_rate: u32::from_be_bytes([header[2], header[3], header[4], header[5]]),
             frame_size: u32::from_be_bytes([header[6], header[7], header[8], header[9]]),
-            unknown: u32::from_be_bytes([header[10], header[11], header[12], header[13]]),
         })
     }
 
@@ -51,7 +49,7 @@ pub struct AudioFrame {
 
 #[derive(Debug)]
 pub struct AudioReceiver {
-    format: Option<AudioFormat>,
+    format: AudioFormat,
     frame_index_prev: u16,
     startup: bool,
 }
@@ -59,20 +57,16 @@ pub struct AudioReceiver {
 impl AudioReceiver {
     pub fn new(format: AudioFormat) -> Self {
         Self {
-            format: Some(format),
+            format,
             frame_index_prev: 0,
             startup: true,
         }
     }
 
-    pub fn set_format(&mut self, format: AudioFormat) {
-        self.format = Some(format);
-    }
-
     pub fn push(
         &mut self,
         packet: &AvPacket,
-        data: &[u8],
+        data: &Bytes,
         stats: Option<&PacketStats>,
     ) -> Vec<AudioFrame> {
         if packet.codec != 5 {
@@ -93,10 +87,7 @@ impl AudioReceiver {
         if packet.frame_index > (1 << 15) {
             self.startup = false;
         }
-        let duration = self
-            .format
-            .map(|f| f.frame_duration())
-            .unwrap_or(Duration::from_millis(10));
+        let duration = self.format.frame_duration();
         let mut frames = Vec::with_capacity(source_count + fec_count);
         for i in 0..source_count + fec_count {
             let frame_index = if i < source_count {
@@ -117,7 +108,9 @@ impl AudioReceiver {
             self.frame_index_prev = frame_index;
             let off = i * unit_size;
             frames.push(AudioFrame {
-                data: Bytes::copy_from_slice(&data[off..off + unit_size]),
+                // Slicing the shared packet buffer avoids one copy per Opus
+                // packet; the underlying bytes live as long as any frame.
+                data: data.slice(off..off + unit_size),
                 frame_index,
                 duration,
                 is_haptics: packet.is_haptics,
@@ -161,11 +154,10 @@ mod tests {
             bits: 16,
             sample_rate: 48000,
             frame_size: 480,
-            unknown: 0,
         };
         let mut r = AudioReceiver::new(format);
         let p = packet(100, 2, 1, 4);
-        let data = [1u8, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3];
+        let data = Bytes::from_static(&[1u8, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3]);
         let frames = r.push(&p, &data, None);
         // Source units 100,101; FEC unit decodes to 99 (startup skipped).
         assert_eq!(frames.len(), 2);
@@ -181,10 +173,9 @@ mod tests {
             bits: 16,
             sample_rate: 48000,
             frame_size: 480,
-            unknown: 0,
         };
         let mut r = AudioReceiver::new(format);
-        let data = [0u8; 8];
+        let data = Bytes::from_static(&[0u8; 8]);
         let p = packet(10, 2, 0, 4);
         let _ = r.push(&p, &data, None);
         let frames = r.push(&p, &data, None);

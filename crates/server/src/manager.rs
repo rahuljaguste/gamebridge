@@ -14,7 +14,7 @@ use uuid::Uuid;
 use chiaki_core::error::QuitReason;
 use chiaki_core::media::audio::AudioFrame;
 use chiaki_core::media::ingest::VideoFrame;
-use chiaki_core::session::{Session, SessionCommand, SessionEvent, SessionPhase};
+use chiaki_core::session::{Session, SessionCommand, SessionEvent, SessionOutcome, SessionPhase};
 
 use crate::adaptive::{self, AdaptiveContext, SessionQuality};
 use crate::state::{AppState, ProfileView, ServerEvent};
@@ -170,7 +170,7 @@ pub async fn run(
                         quality.sample(received, lost, Instant::now());
                         quality.loss_pct()
                     };
-                    let latency_ms = *stats_shared.latency_ms.lock().unwrap();
+                    let latency_ms = *stats_shared.latency_ms.lock().unwrap_or_else(|error| error.into_inner());
                     stats_state.publish(ServerEvent::Stats {
                         received,
                         lost,
@@ -185,9 +185,17 @@ pub async fn run(
     let outcome = tokio::select! {
         _ = &mut stop_rx => {
             let _ = session.send_command(SessionCommand::Stop);
-            timeout(Duration::from_secs(5), session.wait())
-                .await
-                .unwrap_or_default()
+            match timeout(Duration::from_secs(5), session.wait()).await {
+                Ok(outcome) => normalize_outcome(outcome),
+                Err(_) => {
+                    tracing::warn!("session did not stop within 5 s");
+                    SessionOutcome {
+                        quit_reason: Some(QuitReason::StreamConnectionUnknown),
+                        error: Some("session did not stop within 5 s".into()),
+                        ..Default::default()
+                    }
+                }
+            }
         }
         reason = browser_orphan_watchdog(
             peers.connected.clone(),
@@ -205,25 +213,30 @@ pub async fn run(
             };
             tracing::warn!("{detail}; stopping the session");
             let _ = session.send_command(SessionCommand::Stop);
-            let mut outcome = timeout(Duration::from_secs(5), session.wait())
-                .await
-                .unwrap_or_default();
-            if outcome.quit_reason.is_none() {
-                outcome.quit_reason = Some(QuitReason::Stopped);
-            }
+            let mut outcome = match timeout(Duration::from_secs(5), session.wait()).await {
+                Ok(outcome) => normalize_outcome(outcome),
+                Err(_) => {
+                    tracing::warn!("session did not stop within 5 s after the watchdog tripped");
+                    SessionOutcome {
+                        quit_reason: Some(QuitReason::StreamConnectionUnknown),
+                        error: Some("session stop timed out".into()),
+                        ..Default::default()
+                    }
+                }
+            };
             if outcome.reason_str.is_none() {
                 outcome.reason_str = Some(detail);
             }
             outcome
         }
-        outcome = session.wait() => outcome,
+        outcome = session.wait() => normalize_outcome(outcome),
     };
 
     bridge_cancel.cancel();
-    let _ = forwarder.await;
-    let _ = video.await;
-    let _ = audio.await;
-    let _ = stats_task.await;
+    stop_task("event forwarder", forwarder).await;
+    stop_task("video bridge", video).await;
+    stop_task("audio bridge", audio).await;
+    stop_task("stats task", stats_task).await;
     let (loss_pct, peak_loss_pct, packets, elapsed) = {
         let quality = quality.lock().unwrap_or_else(|error| error.into_inner());
         (
@@ -243,7 +256,12 @@ pub async fn run(
             state.publish(ServerEvent::Notice { message });
         }
     }
-    let _ = peers.peer.close().await;
+    if timeout(Duration::from_secs(3), peers.peer.close())
+        .await
+        .is_err()
+    {
+        tracing::warn!("WebRTC peer did not close within 3 s");
+    }
     session.stop().await;
 
     let reason = outcome.reason();
@@ -293,6 +311,25 @@ pub async fn run(
     }
 }
 
+/// A session that ends without an outcome (supervisor panic/abort) must not
+/// be reported as a clean stop.
+fn normalize_outcome(mut outcome: SessionOutcome) -> SessionOutcome {
+    if outcome.quit_reason.is_none() {
+        outcome.quit_reason = Some(QuitReason::StreamConnectionUnknown);
+    }
+    outcome
+}
+
+/// Wait briefly for a bridge task, then abort it. A track writer can stall
+/// forever if the peer's transport is wedged; teardown must not inherit that.
+async fn stop_task(name: &'static str, mut handle: tokio::task::JoinHandle<()>) {
+    const GRACE: Duration = Duration::from_secs(2);
+    if timeout(GRACE, &mut handle).await.is_err() {
+        tracing::warn!("{name} did not stop within {GRACE:?}; aborting it");
+        handle.abort();
+    }
+}
+
 fn forward_event(event: SessionEvent, shared: &MediaShared) -> Option<ServerEvent> {
     match event {
         SessionEvent::Phase(phase) => Some(ServerEvent::Phase {
@@ -301,11 +338,17 @@ fn forward_event(event: SessionEvent, shared: &MediaShared) -> Option<ServerEven
         SessionEvent::LoginPinRequest { incorrect } => Some(ServerEvent::PinRequest { incorrect }),
         SessionEvent::Connected => Some(ServerEvent::Connected),
         SessionEvent::ConnectionQuality { rtt_ms } => {
-            *shared.latency_ms.lock().unwrap() = Some(rtt_ms);
+            *shared
+                .latency_ms
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = Some(rtt_ms);
             None
         }
         SessionEvent::StreamInfo { profiles, audio } => {
-            *shared.audio_format.lock().unwrap() = Some(audio);
+            *shared
+                .audio_format
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = Some(audio);
             Some(ServerEvent::StreamInfo {
                 profiles: profiles
                     .iter()
@@ -329,7 +372,10 @@ fn forward_event(event: SessionEvent, shared: &MediaShared) -> Option<ServerEven
             header,
         } => {
             if !header.is_empty() {
-                *shared.param_sets.lock().unwrap() = vec![header];
+                *shared
+                    .param_sets
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) = vec![header];
             }
             Some(ServerEvent::VideoFormat {
                 profile_index,
@@ -384,6 +430,13 @@ mod tests {
 
     fn clients(value: usize) -> Arc<AtomicUsize> {
         Arc::new(AtomicUsize::new(value))
+    }
+
+    #[test]
+    fn missing_outcome_is_an_error() {
+        let outcome = normalize_outcome(SessionOutcome::default());
+        assert_eq!(outcome.reason(), QuitReason::StreamConnectionUnknown);
+        assert!(outcome.reason().is_error());
     }
 
     #[tokio::test]

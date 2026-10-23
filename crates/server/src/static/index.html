@@ -36,7 +36,7 @@
         <circle cx="25.1" cy="27.6" r="1.45" fill="#9db9ff"/>
       </svg>
     </span>
-    <h1>GameBridge</h1>
+    <h1>GameBridge <span class="beta-badge">Beta</span></h1>
   </div>
   <div class="topbar-right">
     <button id="lock-btn" class="icon-button hidden" type="button" title="Lock this bridge" aria-label="Lock this bridge">
@@ -106,6 +106,12 @@
       <video id="video" autoplay playsinline></video>
       <canvas id="video-sharp" class="video-sharp hidden" aria-hidden="true"></canvas>
 
+      <div id="player-hud" class="player-hud">
+        <span id="conn-status" class="status-pill" role="status" aria-live="polite">Idle</span>
+        <span id="stats" class="stats" aria-describedby="stats-help"></span>
+        <span id="stats-help" class="visually-hidden">Round-trip time to the console, packets received, and packets lost.</span>
+      </div>
+
       <div id="video-overlay" class="player-overlay">
         <div class="player-card">
           <span class="spinner" aria-hidden="true"></span>
@@ -166,24 +172,80 @@
             </div>
             <button id="touch-menu-close" class="touch-menu-close" type="button">Done</button>
           </div>
-          <div class="touch-menu-status">
-            <span id="touch-menu-state" class="status-pill">Live</span>
-            <span id="touch-menu-stats" class="stats"></span>
-          </div>
-          <label class="touch-menu-volume" for="touch-menu-volume">
-            <span>Volume</span>
-            <input id="touch-menu-volume" type="range" min="0" max="100" step="1" value="100">
-          </label>
-          <div class="touch-menu-grid">
-            <button class="touch-menu-action" type="button" data-menu-action="pause">Pause</button>
-            <button class="touch-menu-action" type="button" data-menu-action="mute">Mute</button>
-            <button class="touch-menu-action" type="button" data-menu-action="fullscreen">Fullscreen</button>
-            <button class="touch-menu-action" type="button" data-menu-action="screenshot">Screenshot</button>
-            <button class="touch-menu-action" type="button" data-menu-action="resync">Resync</button>
-            <button class="touch-menu-action" type="button" data-menu-action="settings">Settings</button>
-            <button class="touch-menu-action" type="button" data-menu-action="controls">Hide controls</button>
-            <button class="touch-menu-action" type="button" data-menu-action="rest">Rest mode</button>
-            <button class="touch-menu-action danger" type="button" data-menu-action="stop">Stop stream</button>
+          <div class="touch-menu-sections">
+            <section class="touch-menu-section" aria-label="Playback">
+              <p class="touch-menu-label">Playback</p>
+              <div class="touch-menu-grid">
+                <button class="touch-menu-action" type="button" data-menu-action="pause">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <g class="icon-pause"><rect x="7" y="5" width="3.4" height="14" rx="1.1"/><rect x="13.6" y="5" width="3.4" height="14" rx="1.1"/></g>
+                    <path class="icon-play" d="M8 5.5v13l10-6.5z"/>
+                  </svg>
+                  <span data-menu-label>Pause</span>
+                </button>
+                <button class="touch-menu-action" type="button" data-menu-action="mute">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 9v6h4l5 4V5L8 9H4z"/>
+                    <path d="M16 9a4 4 0 0 1 0 6"/>
+                    <path d="M18.5 6.5a8 8 0 0 1 0 11"/>
+                  </svg>
+                  <span data-menu-label>Mute</span>
+                </button>
+                <button class="touch-menu-action" type="button" data-menu-action="screenshot">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 8.5A2.5 2.5 0 0 1 6.5 6h1.2l1.3-2h6l1.3 2h1.2A2.5 2.5 0 0 1 20 8.5v8A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5z"/>
+                    <circle cx="12" cy="12.5" r="3.3"/>
+                  </svg>
+                  <span data-menu-label>Screenshot</span>
+                </button>
+              </div>
+              <label class="touch-menu-volume" for="touch-menu-volume">
+                <span>Volume</span>
+                <input id="touch-menu-volume" type="range" min="0" max="100" step="1" value="100">
+              </label>
+            </section>
+            <section class="touch-menu-section" aria-label="View and connection">
+              <p class="touch-menu-label">View &amp; connection</p>
+              <div class="touch-menu-grid">
+                <button class="touch-menu-action" type="button" data-menu-action="fullscreen">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>
+                  <span data-menu-label>Fullscreen</span>
+                </button>
+                <button class="touch-menu-action" type="button" data-menu-action="controls">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M7.6 8h8.8a4.4 4.4 0 0 1 4.3 5.2l-.5 2.6A2.5 2.5 0 0 1 15.4 17L13.9 15.6h-3.8L8.6 17a2.5 2.5 0 0 1-4.8-.9l-.5-2.6A4.4 4.4 0 0 1 7.6 8Z"/>
+                    <path d="M8 10.8v2.8M6.6 12.2h2.8"/>
+                    <circle cx="15.4" cy="11.4" r=".95"/>
+                    <circle cx="17.4" cy="13" r=".95"/>
+                  </svg>
+                  <span data-menu-label>Hide controls</span>
+                </button>
+                <button class="touch-menu-action" type="button" data-menu-action="resync">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 12a8.5 8.5 0 1 1-2.5-6"/><path d="M20.5 3.5V9H15"/></svg>
+                  <span data-menu-label>Resync</span>
+                </button>
+              </div>
+            </section>
+            <section class="touch-menu-section" aria-label="Console">
+              <p class="touch-menu-label">Console</p>
+              <div class="touch-menu-grid">
+                <button class="touch-menu-action" type="button" data-menu-action="settings">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Z"/>
+                    <path d="M19.4 13.5a7.8 7.8 0 0 0 .05-1.5 7.8 7.8 0 0 0-.05-1.5l1.7-1.3-1.8-3.1-2 .8a7.7 7.7 0 0 0-2.6-1.5l-.3-2.1h-3.6l-.3 2.1a7.7 7.7 0 0 0-2.6 1.5l-2-.8-1.8 3.1 1.7 1.3a7.8 7.8 0 0 0 0 3l-1.7 1.3 1.8 3.1 2-.8a7.7 7.7 0 0 0 2.6 1.5l.3 2.1h3.6l.3-2.1a7.7 7.7 0 0 0 2.6-1.5l2 .8 1.8-3.1-1.7-1.3Z"/>
+                  </svg>
+                  <span data-menu-label>Settings</span>
+                </button>
+                <button class="touch-menu-action" type="button" data-menu-action="rest">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 14.6A8.4 8.4 0 0 1 9.4 3.8a8.4 8.4 0 1 0 10.8 10.8Z"/></svg>
+                  <span data-menu-label>Rest mode</span>
+                </button>
+                <button class="touch-menu-action danger" type="button" data-menu-action="stop">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v8"/><path d="M6.6 6.6a7.5 7.5 0 1 0 10.8 0"/></svg>
+                  <span data-menu-label>Stop stream</span>
+                </button>
+              </div>
+            </section>
           </div>
           <p class="touch-menu-note">
             The console keeps running while this menu is open.<br>
@@ -195,30 +257,62 @@
       <div id="rotate-hint" class="rotate-hint hidden" role="status" aria-live="polite">Rotate your device to landscape for on-screen controls. The stream keeps running.</div>
 
       <div id="player-bar" class="player-bar hidden">
-        <div class="player-meta">
-          <span id="conn-status" class="status-pill" role="status" aria-live="polite">Idle</span>
-          <span id="stats" class="stats" title="Round-trip time to the console · packets received · packets lost"></span>
-        </div>
         <div class="player-actions">
-          <div class="volume-control">
-            <button id="mute-btn" class="player-btn volume-mute" type="button" aria-label="Mute" aria-pressed="false" title="Mute (M)">
+          <div class="player-group" role="group" aria-label="Playback">
+            <div class="volume-control">
+              <button id="mute-btn" class="player-btn volume-mute" type="button" aria-label="Mute" aria-pressed="false" title="Mute (M)">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 9v6h4l5 4V5L8 9H4z"/>
+                  <path class="volume-wave" d="M16 9a4 4 0 0 1 0 6"/>
+                  <path class="volume-wave" d="M18.5 6.5a8 8 0 0 1 0 11"/>
+                  <path class="volume-x" d="M16.5 9l5 6M21.5 9l-5 6"/>
+                </svg>
+              </button>
+              <input id="volume-slider" class="volume-slider" type="range" min="0" max="100" step="1" value="100" aria-label="Stream volume" title="Stream volume">
+            </div>
+            <button id="pause-btn" class="player-btn" type="button" title="Pause this view only; the console keeps running" aria-label="Pause">
               <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M4 9v6h4l5 4V5L8 9H4z"/>
-                <path class="volume-wave" d="M16 9a4 4 0 0 1 0 6"/>
-                <path class="volume-wave" d="M18.5 6.5a8 8 0 0 1 0 11"/>
-                <path class="volume-x" d="M16.5 9l5 6M21.5 9l-5 6"/>
+                <g class="icon-pause"><rect x="7" y="5" width="3.4" height="14" rx="1.1"/><rect x="13.6" y="5" width="3.4" height="14" rx="1.1"/></g>
+                <path class="icon-play" d="M8 5.5v13l10-6.5z"/>
               </svg>
             </button>
-            <input id="volume-slider" class="volume-slider" type="range" min="0" max="100" step="1" value="100" aria-label="Stream volume" title="Stream volume">
+            <button id="screenshot-btn" class="player-btn" type="button" title="Save the current frame as a PNG" aria-label="Screenshot">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 8.5A2.5 2.5 0 0 1 6.5 6h1.2l1.3-2h6l1.3 2h1.2A2.5 2.5 0 0 1 20 8.5v8A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5z"/>
+                <circle cx="12" cy="12.5" r="3.3"/>
+              </svg>
+            </button>
           </div>
-          <button id="screenshot-btn" class="player-btn" type="button" title="Save the current frame as a PNG">Screenshot</button>
-          <button id="pause-btn" class="player-btn" type="button" title="Pause this view only; the console keeps running">Pause</button>
-          <button id="touch-toggle-btn" class="player-btn hidden" type="button" aria-pressed="false" title="Show on-screen touch controls">Controls</button>
-          <button id="settings-btn" class="player-btn" type="button">Settings</button>
-          <button id="resync-btn" class="player-btn" type="button" title="Request a fresh keyframe from the console">Resync</button>
-          <button id="rest-btn" class="player-btn" type="button" title="Put the console into Rest Mode">Rest mode</button>
-          <button id="fullscreen-btn" class="player-btn" type="button" title="Enter fullscreen" aria-label="Enter fullscreen">Fullscreen</button>
-          <button id="stop-btn" class="player-btn danger" type="button" disabled>Stop</button>
+          <div class="player-group" role="group" aria-label="View and connection">
+            <button id="touch-toggle-btn" class="player-btn hidden" type="button" aria-pressed="false" aria-label="Show on-screen touch controls" title="Show on-screen touch controls">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M7.6 8h8.8a4.4 4.4 0 0 1 4.3 5.2l-.5 2.6A2.5 2.5 0 0 1 15.4 17L13.9 15.6h-3.8L8.6 17a2.5 2.5 0 0 1-4.8-.9l-.5-2.6A4.4 4.4 0 0 1 7.6 8Z"/>
+                <path d="M8 10.8v2.8M6.6 12.2h2.8"/>
+                <circle cx="15.4" cy="11.4" r=".95"/>
+                <circle cx="17.4" cy="13" r=".95"/>
+              </svg>
+            </button>
+            <button id="resync-btn" class="player-btn" type="button" title="Request a fresh keyframe from the console" aria-label="Resync">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 12a8.5 8.5 0 1 1-2.5-6"/><path d="M20.5 3.5V9H15"/></svg>
+            </button>
+            <button id="fullscreen-btn" class="player-btn" type="button" title="Enter fullscreen" aria-label="Enter fullscreen">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>
+            </button>
+          </div>
+          <div class="player-group" role="group" aria-label="Console">
+            <button id="settings-btn" class="player-btn" type="button" title="Settings" aria-label="Settings">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Z"/>
+                <path d="M19.4 13.5a7.8 7.8 0 0 0 .05-1.5 7.8 7.8 0 0 0-.05-1.5l1.7-1.3-1.8-3.1-2 .8a7.7 7.7 0 0 0-2.6-1.5l-.3-2.1h-3.6l-.3 2.1a7.7 7.7 0 0 0-2.6 1.5l-2-.8-1.8 3.1 1.7 1.3a7.8 7.8 0 0 0 0 3l-1.7 1.3 1.8 3.1 2-.8a7.7 7.7 0 0 0 2.6 1.5l.3 2.1h3.6l.3-2.1a7.7 7.7 0 0 0 2.6-1.5l2 .8 1.8-3.1-1.7-1.3Z"/>
+              </svg>
+            </button>
+            <button id="rest-btn" class="player-btn" type="button" title="Put the console into Rest Mode" aria-label="Rest mode">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 14.6A8.4 8.4 0 0 1 9.4 3.8a8.4 8.4 0 1 0 10.8 10.8Z"/></svg>
+            </button>
+            <button id="stop-btn" class="player-btn danger" type="button" title="Stop stream" aria-label="Stop stream" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v8"/><path d="M6.6 6.6a7.5 7.5 0 1 0 10.8 0"/></svg>
+            </button>
+          </div>
         </div>
       </div>
 

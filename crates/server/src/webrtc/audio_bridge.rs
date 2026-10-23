@@ -21,7 +21,11 @@ pub async fn run(
 ) {
     // Wait for stream info, then for the first video IDR so A/V starts together.
     let format = loop {
-        if let Some(format) = *shared.audio_format.lock().unwrap() {
+        if let Some(format) = *shared
+            .audio_format
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+        {
             break format;
         }
         tokio::select! {
@@ -52,7 +56,11 @@ pub async fn run(
                 frame
             }
         };
-        if let Err(e) = writer.write_sample(frame.data, frame.duration).await {
+        let result = tokio::select! {
+            _ = cancel.cancelled() => break,
+            result = writer.write_sample(frame.data, frame.duration) => result,
+        };
+        if let Err(e) = result {
             tracing::warn!("audio write failed: {e:#}");
         }
     }

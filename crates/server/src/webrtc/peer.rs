@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Create the server-side peer connection, video/Opus tracks and offer.
 
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -77,12 +77,12 @@ fn udp_addrs() -> Vec<String> {
 pub struct TrackWriter {
     track: Arc<TrackLocalStaticSample>,
     ssrc: u32,
-    payload_type: Arc<AtomicU16>,
+    payload_type: u8,
 }
 
 impl TrackWriter {
     pub fn payload_type(&self) -> u8 {
-        self.payload_type.load(Ordering::Relaxed) as u8
+        self.payload_type
     }
 
     pub async fn write_sample(&self, data: bytes::Bytes, duration: Duration) -> Result<()> {
@@ -99,6 +99,7 @@ impl TrackWriter {
     }
 }
 
+#[derive(Clone)]
 pub struct PeerHandles {
     pub peer: Arc<dyn PeerConnection>,
     pub video: TrackWriter,
@@ -296,12 +297,12 @@ pub async fn create_peer(
             video: TrackWriter {
                 track: video_track,
                 ssrc: video_ssrc,
-                payload_type: Arc::new(AtomicU16::new(video_pt as u16)),
+                payload_type: video_pt,
             },
             audio: TrackWriter {
                 track: audio_track,
                 ssrc: audio_ssrc,
-                payload_type: Arc::new(AtomicU16::new(audio_pt as u16)),
+                payload_type: audio_pt,
             },
             connected,
             gathering: Arc::clone(&gathering),

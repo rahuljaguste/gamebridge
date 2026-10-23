@@ -48,17 +48,6 @@ impl Gf256 {
         Ok(self.exp[255 - self.log[a as usize] as usize])
     }
 
-    pub fn div(&self, a: u8, b: u8) -> Result<u8> {
-        if b == 0 {
-            return Err(Error::InvalidData);
-        }
-        if a == 0 {
-            return Ok(0);
-        }
-        let e = self.log[a as usize] as i32 - self.log[b as usize] as i32 + 255;
-        Ok(self.exp[e as usize])
-    }
-
     /// dst ^= coeff * src
     pub fn mul_add(&self, src: &[u8], coeff: u8, dst: &mut [u8]) {
         match coeff {

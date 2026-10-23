@@ -203,6 +203,18 @@ impl AppState {
             armed: true,
         })
     }
+
+    /// Reserve the single session slot and reset per-session state. The
+    /// caller must `disarm` the guard once the session is installed.
+    pub async fn reserve_session_start(self: &Arc<Self>) -> Option<StartGuard> {
+        let guard = self.begin_start()?;
+        if self.active.lock().await.is_some() {
+            return None;
+        }
+        self.clear_replay();
+        *self.last_session_error.lock().await = None;
+        Some(guard)
+    }
 }
 
 /// RAII reservation held from the first check through the final insertion of

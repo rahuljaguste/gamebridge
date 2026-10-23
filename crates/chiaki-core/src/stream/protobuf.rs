@@ -129,21 +129,27 @@ pub fn message_type(buf: &[u8]) -> Result<u32> {
     Err(Error::InvalidData)
 }
 
-pub fn parse_bang(buf: &[u8]) -> Result<Bang> {
+/// Unwrap a Takion message envelope: validate the top-level type field and
+/// return the inner payload carried by `payload_field`.
+fn parse_envelope(buf: &[u8], expected_type: u32, payload_field: u32) -> Result<Vec<u8>> {
     let mut outer = Reader::new(buf);
     let mut payload = None;
     while let Some((field, value)) = outer.next_field()? {
         match field {
             1 => {
-                if as_u32(value)? != TYPE_BANG {
+                if as_u32(value)? != expected_type {
                     return Err(Error::InvalidData);
                 }
             }
-            3 => payload = Some(as_bytes(value)?.to_vec()),
+            field if field == payload_field => payload = Some(as_bytes(value)?.to_vec()),
             _ => {}
         }
     }
-    let payload = payload.ok_or(Error::InvalidData)?;
+    payload.ok_or(Error::InvalidData)
+}
+
+pub fn parse_bang(buf: &[u8]) -> Result<Bang> {
+    let payload = parse_envelope(buf, TYPE_BANG, 3)?;
     let mut r = Reader::new(&payload);
     let mut bang = Bang {
         version_accepted: false,
@@ -192,20 +198,7 @@ impl ConnectionQuality {
 }
 
 pub fn parse_connection_quality(buf: &[u8]) -> Result<ConnectionQuality> {
-    let mut outer = Reader::new(buf);
-    let mut payload = None;
-    while let Some((field, value)) = outer.next_field()? {
-        match field {
-            1 => {
-                if as_u32(value)? != TYPE_CONNECTIONQUALITY {
-                    return Err(Error::InvalidData);
-                }
-            }
-            17 => payload = Some(as_bytes(value)?.to_vec()),
-            _ => {}
-        }
-    }
-    let payload = payload.ok_or(Error::InvalidData)?;
+    let payload = parse_envelope(buf, TYPE_CONNECTIONQUALITY, 17)?;
     let mut r = Reader::new(&payload);
     let mut quality = ConnectionQuality::default();
     while let Some((field, value)) = r.next_field()? {
@@ -220,20 +213,7 @@ pub fn parse_connection_quality(buf: &[u8]) -> Result<ConnectionQuality> {
 }
 
 pub fn parse_stream_info(buf: &[u8]) -> Result<StreamInfo> {
-    let mut outer = Reader::new(buf);
-    let mut payload = None;
-    while let Some((field, value)) = outer.next_field()? {
-        match field {
-            1 => {
-                if as_u32(value)? != TYPE_STREAMINFO {
-                    return Err(Error::InvalidData);
-                }
-            }
-            15 => payload = Some(as_bytes(value)?.to_vec()),
-            _ => {}
-        }
-    }
-    let payload = payload.ok_or(Error::InvalidData)?;
+    let payload = parse_envelope(buf, TYPE_STREAMINFO, 15)?;
     let mut r = Reader::new(&payload);
     let mut resolutions = Vec::new();
     let mut audio_header = Vec::new();

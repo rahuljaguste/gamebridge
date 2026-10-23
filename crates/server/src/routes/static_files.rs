@@ -15,51 +15,28 @@ const STYLE_CSS: &str = include_str!("../static/style.css");
 const NO_STORE: &str = "no-store";
 
 pub async fn index() -> Response {
-    (
-        [
-            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
-            (header::CACHE_CONTROL, NO_STORE),
-        ],
-        INDEX,
-    )
-        .into_response()
+    asset(INDEX, "text/html; charset=utf-8")
 }
 
 pub async fn app_js() -> Response {
-    (
-        [
-            (
-                header::CONTENT_TYPE,
-                "application/javascript; charset=utf-8",
-            ),
-            (header::CACHE_CONTROL, NO_STORE),
-        ],
-        APP_JS,
-    )
-        .into_response()
+    asset(APP_JS, "application/javascript; charset=utf-8")
 }
 
 pub async fn motion_math_js() -> Response {
-    (
-        [
-            (
-                header::CONTENT_TYPE,
-                "application/javascript; charset=utf-8",
-            ),
-            (header::CACHE_CONTROL, NO_STORE),
-        ],
-        MOTION_MATH_JS,
-    )
-        .into_response()
+    asset(MOTION_MATH_JS, "application/javascript; charset=utf-8")
 }
 
 pub async fn style_css() -> Response {
+    asset(STYLE_CSS, "text/css; charset=utf-8")
+}
+
+fn asset(body: &'static str, content_type: &'static str) -> Response {
     (
         [
-            (header::CONTENT_TYPE, "text/css; charset=utf-8"),
+            (header::CONTENT_TYPE, content_type),
             (header::CACHE_CONTROL, NO_STORE),
         ],
-        STYLE_CSS,
+        body,
     )
         .into_response()
 }

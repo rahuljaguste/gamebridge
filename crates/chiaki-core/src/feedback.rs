@@ -204,6 +204,11 @@ impl HistoryBuffer {
         self.events.push_front(event);
     }
 
+    /// Reuse the allocation across feedback ticks.
+    pub fn clear(&mut self) {
+        self.events.clear();
+    }
+
     pub fn format(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.events.len() * 5);
         for event in &self.events {

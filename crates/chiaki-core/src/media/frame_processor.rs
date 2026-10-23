@@ -14,18 +14,22 @@ pub const VIDEO_BUFFER_PADDING: usize = 64;
 /// forged padding field.
 pub const MAX_FRAME_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 
+/// Bytes needed for `slots` units of `stride` bytes plus padding, capped by
+/// the hostile-packet ceiling.
+fn frame_buffer_size(stride: usize, slots: usize) -> Result<usize> {
+    stride
+        .checked_mul(slots)
+        .and_then(|n| n.checked_add(VIDEO_BUFFER_PADDING))
+        .filter(|n| *n <= MAX_FRAME_BUFFER_BYTES)
+        .ok_or(Error::InvalidData)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlushResult {
     Success,
     FecSuccess,
     FecFailed,
     Failed,
-}
-
-#[derive(Debug, Default)]
-pub struct StreamStats {
-    pub frames: u64,
-    pub bytes: u64,
 }
 
 #[derive(Debug, Default)]
@@ -39,7 +43,6 @@ pub struct FrameProcessor {
     units_fec_received: usize,
     unit_slots: Vec<usize>,
     flushed: bool,
-    pub stream_stats: StreamStats,
 }
 
 impl FrameProcessor {
@@ -80,13 +83,7 @@ impl FrameProcessor {
         if slots > UNIT_SLOTS_MAX {
             return Err(Error::InvalidData);
         }
-        let required = stride
-            .checked_mul(slots)
-            .and_then(|n| n.checked_add(VIDEO_BUFFER_PADDING))
-            .ok_or(Error::InvalidData)?;
-        if required > MAX_FRAME_BUFFER_BYTES {
-            return Err(Error::InvalidData);
-        }
+        let required = frame_buffer_size(stride, slots)?;
 
         let mut unit_slots = if slots != self.unit_slots.len() {
             vec![0; slots]
@@ -179,13 +176,7 @@ impl FrameProcessor {
     fn grow_unit_size(&mut self, size: usize) -> Result<()> {
         let stride = size.div_ceil(16) * 16;
         let slots = self.unit_slots.len();
-        let required = stride
-            .checked_mul(slots)
-            .and_then(|n| n.checked_add(VIDEO_BUFFER_PADDING))
-            .ok_or(Error::InvalidData)?;
-        if required > MAX_FRAME_BUFFER_BYTES {
-            return Err(Error::InvalidData);
-        }
+        let required = frame_buffer_size(stride, slots)?;
         let mut frame_buf = vec![0u8; required];
         for (i, &len) in self.unit_slots.iter().enumerate() {
             if len == 0 {
@@ -242,8 +233,6 @@ impl FrameProcessor {
             let off = i * self.stride;
             out.extend_from_slice(&self.frame_buf[off + 2..off + data_size]);
         }
-        self.stream_stats.frames += 1;
-        self.stream_stats.bytes += out.len() as u64;
         (result, out)
     }
 
@@ -283,26 +272,7 @@ impl FrameProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn packet(frame: u16, unit: u16, total: u16, fec: u16, data_len: usize) -> AvPacket {
-        AvPacket {
-            packet_index: 0,
-            frame_index: frame,
-            uses_nalu_info_structs: false,
-            is_video: true,
-            is_haptics: false,
-            unit_index: unit,
-            units_in_frame_total: total,
-            units_in_frame_fec: fec,
-            codec: 3,
-            word_at_0x18: 0,
-            adaptive_stream_index: 0,
-            byte_at_0x2c: 0,
-            key_pos: 0,
-            data_offset: 0,
-            data_len,
-        }
-    }
+    use crate::test_support::av_packet as packet;
 
     #[test]
     fn assembles_without_fec() {

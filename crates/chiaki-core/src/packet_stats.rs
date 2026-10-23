@@ -22,21 +22,19 @@ pub struct PacketStats {
     inner: Mutex<Inner>,
 }
 
-pub const PACKET_STATS_INTERVAL_DEFAULT: u64 = 200;
-
 impl PacketStats {
     pub fn new() -> Self {
         Self::default()
     }
 
     pub fn push_generation(&self, received: u64, lost: u64) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         inner.gen_received = inner.gen_received.saturating_add(received);
         inner.gen_lost = inner.gen_lost.saturating_add(lost);
     }
 
     pub fn push_seq(&self, seq_num: u16) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         if !inner.seq_initialized {
             // The first packet has no predecessor to compare against; make it
             // the first interval instead of treating the sequence from zero as
@@ -66,7 +64,7 @@ impl PacketStats {
     /// Read (received, lost) for the current congestion window and optionally
     /// reset it. Resetting folds the window into the cumulative totals.
     pub fn get(&self, reset: bool) -> (u64, u64) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         let (received, lost) = Self::window(&inner);
         if reset {
             inner.total_received = inner.total_received.saturating_add(received);
@@ -81,7 +79,7 @@ impl PacketStats {
 
     /// Cumulative counters for display, including the current window.
     pub fn totals(&self) -> (u64, u64) {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         let (received, lost) = Self::window(&inner);
         (
             inner.total_received.saturating_add(received),

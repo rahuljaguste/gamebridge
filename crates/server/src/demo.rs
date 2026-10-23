@@ -11,11 +11,13 @@ use anyhow::Context;
 use axum::Json;
 use axum::extract::State;
 use bytes::Bytes;
+use futures_util::FutureExt;
 use tokio::sync::{mpsc, oneshot, watch};
 use uuid::Uuid;
 
 use chiaki_core::controller::ControllerState;
-use chiaki_core::media::video::scan_annex_b;
+use chiaki_core::error::QuitReason;
+use chiaki_core::media::video::{annex_b_units, scan_annex_b};
 use chiaki_core::session::SessionCommand;
 use chiaki_core::target::Codec;
 
@@ -27,16 +29,9 @@ pub async fn start(
     State(state): State<Arc<AppState>>,
 ) -> std::result::Result<Json<StartResponse>, ApiError> {
     let start = state
-        .begin_start()
+        .reserve_session_start()
+        .await
         .ok_or_else(|| ApiError::conflict("a session is already active"))?;
-    {
-        let active = state.active.lock().await;
-        if active.is_some() {
-            return Err(ApiError::conflict("a session is already active"));
-        }
-    }
-    state.clear_replay();
-    *state.last_session_error.lock().await = None;
     let path: PathBuf = state
         .demo_file
         .clone()
@@ -83,16 +78,26 @@ pub async fn start(
     }
     start.disarm();
 
-    tokio::spawn(run(
-        state,
-        id,
-        peers,
-        shared,
-        access_units,
-        input_rx,
-        cmd_rx,
-        stop_rx,
-    ));
+    let panic_state = state.clone();
+    let panic_peers = peers.clone();
+    tokio::spawn(async move {
+        let outcome = std::panic::AssertUnwindSafe(run(
+            state,
+            id,
+            peers,
+            shared,
+            access_units,
+            input_rx,
+            cmd_rx,
+            stop_rx,
+        ))
+        .catch_unwind()
+        .await;
+        if outcome.is_err() {
+            tracing::error!("demo session task panicked");
+            finish(&panic_state, id, &panic_peers, "demo session crashed", true).await;
+        }
+    });
 
     Ok(Json(StartResponse {
         session_id: id.to_string(),
@@ -126,7 +131,10 @@ async fn run(
     // Cache SPS/PPS from the stream for IDR injection.
     let param_sets: Vec<Bytes> = collect_param_sets(&access_units);
     if !param_sets.is_empty() {
-        *shared.param_sets.lock().unwrap() = param_sets;
+        *shared
+            .param_sets
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = param_sets;
     }
 
     // Wait briefly for the browser to connect. Every exit from here must clear
@@ -136,7 +144,7 @@ async fn run(
     let mut stopped = false;
     while !connected.load(Ordering::Relaxed) {
         if tokio::time::Instant::now() >= deadline {
-            finish(&state, id, &peers, "browser did not connect").await;
+            finish(&state, id, &peers, "browser did not connect", true).await;
             return;
         }
         tokio::select! {
@@ -157,7 +165,7 @@ async fn run(
         }
     }
     if stopped {
-        finish(&state, id, &peers, "demo stream stopped").await;
+        finish(&state, id, &peers, "demo stream stopped", false).await;
         return;
     }
 
@@ -167,16 +175,7 @@ async fn run(
         let scan = scan_annex_b(&au, Codec::H264);
         let mut data = au;
         if scan.is_idr && !(scan.has_sps || scan.has_pps) {
-            let params = shared.param_sets.lock().unwrap().clone();
-            if !params.is_empty() {
-                let mut combined =
-                    Vec::with_capacity(data.len() + params.iter().map(|p| p.len()).sum::<usize>());
-                for p in &params {
-                    combined.extend_from_slice(p);
-                }
-                combined.extend_from_slice(&data);
-                data = Bytes::from(combined);
-            }
+            data = shared.with_param_sets(data);
         }
         let write = peers.video.write_sample(data, Duration::from_millis(33));
         tokio::pin!(write);
@@ -206,13 +205,26 @@ async fn run(
         }
     }
 
-    finish(&state, id, &peers, "demo stream stopped").await;
+    finish(&state, id, &peers, "demo stream stopped", false).await;
 }
 
-async fn finish(state: &AppState, id: Uuid, peers: &webrtc::PeerHandles, detail: &str) {
+async fn finish(
+    state: &AppState,
+    id: Uuid,
+    peers: &webrtc::PeerHandles,
+    detail: &str,
+    is_error: bool,
+) {
+    if is_error {
+        *state.last_session_error.lock().await = Some(detail.to_string());
+    }
     state.publish(ServerEvent::Quit {
         session_id: id.to_string(),
-        reason: "Stopped".to_string(),
+        reason: if is_error {
+            QuitReason::StreamConnectionUnknown.as_str().to_string()
+        } else {
+            "Stopped".to_string()
+        },
         reason_string: Some(detail.to_string()),
     });
     {
@@ -223,90 +235,78 @@ async fn finish(state: &AppState, id: Uuid, peers: &webrtc::PeerHandles, detail:
             *active = None;
         }
     }
-    let _ = peers.peer.close().await;
-}
-
-fn start_code_len(data: &[u8], i: usize) -> Option<usize> {
-    if i + 3 <= data.len() && data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
-        Some(3)
-    } else if i + 4 <= data.len()
-        && data[i] == 0
-        && data[i + 1] == 0
-        && data[i + 2] == 0
-        && data[i + 3] == 1
+    if tokio::time::timeout(Duration::from_secs(3), peers.peer.close())
+        .await
+        .is_err()
     {
-        Some(4)
-    } else {
-        None
+        tracing::warn!("demo WebRTC peer did not close within 3 s");
     }
 }
 
 /// Split an Annex-B byte stream into access units at AUD NALs.
 fn split_access_units(data: &[u8]) -> Vec<Bytes> {
-    let mut starts = Vec::new();
-    let mut i = 0;
-    while i < data.len() {
-        if let Some(len) = start_code_len(data, i) {
-            starts.push((i, len));
-            i += len;
-        } else {
-            i += 1;
-        }
-    }
-    if starts.is_empty() {
+    let units = annex_b_units(data);
+    // `annex_b_units` also accepts a bare NAL; a demo file must contain real
+    // start codes, otherwise any text/binary file would be accepted.
+    if units.is_empty() || units.iter().all(|unit| unit.start == unit.header) {
         return Vec::new();
     }
-    let mut units = Vec::new();
+    let mut out = Vec::new();
     let mut current = Vec::new();
-    for (idx, &(pos, sc_len)) in starts.iter().enumerate() {
-        let end = starts
-            .get(idx + 1)
-            .map(|(next, _)| *next)
-            .unwrap_or(data.len());
-        let nal = &data[pos..end];
-        let header = data.get(pos + sc_len).copied().unwrap_or(0);
-        let nal_type = header & 0x1f;
+    for unit in units {
+        let nal_type = data.get(unit.header).copied().unwrap_or(0) & 0x1f;
         if nal_type == 9 && !current.is_empty() {
-            units.push(Bytes::from(std::mem::take(&mut current)));
+            out.push(Bytes::from(std::mem::take(&mut current)));
         }
-        current.extend_from_slice(nal);
+        current.extend_from_slice(&data[unit.start..unit.end]);
     }
     if !current.is_empty() {
-        units.push(Bytes::from(current));
+        out.push(Bytes::from(current));
     }
-    units
+    out
 }
 
 fn collect_param_sets(units: &[Bytes]) -> Vec<Bytes> {
-    let mut out = Vec::new();
     for au in units {
-        let mut i = 0;
-        while i < au.len() {
-            if let Some(sc_len) = start_code_len(au, i) {
-                let start = i;
-                let mut end = au.len();
-                let mut j = i + sc_len;
-                while j < au.len() {
-                    if start_code_len(au, j).is_some() {
-                        end = j;
-                        break;
-                    }
-                    j += 1;
-                }
-                if let Some(&header) = au.get(i + sc_len) {
-                    let ty = header & 0x1f;
-                    if ty == 7 || ty == 8 {
-                        out.push(Bytes::copy_from_slice(&au[start..end]));
-                    }
-                }
-                i = end;
-            } else {
-                i += 1;
+        let mut out = Vec::new();
+        for unit in annex_b_units(au) {
+            let header = au.get(unit.header).copied().unwrap_or(0);
+            if matches!(header & 0x1f, 7 | 8) {
+                out.push(Bytes::copy_from_slice(&au[unit.start..unit.end]));
             }
         }
         if !out.is_empty() {
-            break;
+            return out;
         }
     }
-    out
+    Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn splits_access_units_and_collects_parameter_sets() {
+        let data = [
+            0, 0, 0, 1, 0x09, 0xf0, // AUD
+            0, 0, 0, 1, 0x67, 0x42, // SPS
+            0, 0, 1, 0x68, 0xce, // PPS
+            0, 0, 0, 1, 0x65, 0x88, // IDR
+            0, 0, 0, 1, 0x09, 0xf0, // AUD (next access unit)
+            0, 0, 0, 1, 0x65, 0x99, // IDR
+        ];
+        let units = split_access_units(&data);
+        assert_eq!(units.len(), 2);
+        assert_eq!(&units[0][..], &data[..23]);
+        assert_eq!(&units[1][..], &data[23..]);
+
+        let params = collect_param_sets(&units);
+        assert_eq!(params.len(), 2);
+        assert_eq!(&params[0][..], &[0, 0, 0, 1, 0x67, 0x42]);
+        assert_eq!(&params[1][..], &[0, 0, 1, 0x68, 0xce]);
+
+        // Files without an Annex-B start code are rejected.
+        assert!(split_access_units(b"not an annex-b stream").is_empty());
+    }
 }

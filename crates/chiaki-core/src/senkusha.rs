@@ -71,6 +71,8 @@ struct Conn {
     tag_remote: u32,
     seq: u32,
     key_state: KeyState,
+    /// Reused datagram buffer; senkusha receives thousands of probe replies.
+    recv_buf: Vec<u8>,
 }
 
 impl Conn {
@@ -163,16 +165,15 @@ impl Conn {
 
     async fn recv_event(&mut self) -> Result<Event> {
         loop {
-            let mut packet = vec![0u8; 65535];
             let n = self
                 .sock
-                .recv(&mut packet)
+                .recv(&mut self.recv_buf)
                 .await
                 .map_err(|_| Error::Network)?;
-            packet.truncate(n);
-            if packet.is_empty() {
+            if n == 0 {
                 continue;
             }
+            let packet = &self.recv_buf[..n];
             match packet[0] & 0x0f {
                 PACKET_TYPE_CONTROL => {
                     let header =
@@ -214,7 +215,7 @@ impl Conn {
                     }
                 }
                 PACKET_TYPE_VIDEO | PACKET_TYPE_AUDIO => {
-                    if let Some(av) = parse_v7_av(&packet) {
+                    if let Some(av) = parse_v7_av(packet) {
                         return Ok(Event::Av(av));
                     }
                 }
@@ -232,6 +233,22 @@ impl Conn {
     where
         F: Fn(&[u8]) -> bool,
     {
+        self.wait_event(
+            deadline,
+            cancel,
+            |event| matches!(event, Event::Data { payload } if predicate(payload)),
+        )
+        .await
+    }
+
+    /// Poll inbound events until `predicate` accepts one, the deadline passes,
+    /// or the session is cancelled.
+    async fn wait_event(
+        &mut self,
+        deadline: Instant,
+        cancel: &CancellationToken,
+        mut predicate: impl FnMut(&Event) -> bool,
+    ) -> Result<bool> {
         loop {
             if cancel.is_cancelled() {
                 return Err(Error::Canceled);
@@ -242,8 +259,11 @@ impl Conn {
             }
             let wait = (deadline - now).min(RESEND_INTERVAL);
             match tokio::time::timeout(wait, self.recv_event()).await {
-                Ok(Ok(Event::Data { payload })) if predicate(&payload) => return Ok(true),
-                Ok(Ok(_)) => {}
+                Ok(Ok(event)) => {
+                    if predicate(&event) {
+                        return Ok(true);
+                    }
+                }
                 Ok(Err(e)) => return Err(e),
                 Err(_) => {}
             }
@@ -265,6 +285,7 @@ pub async fn run(host: IpAddr, cancel: &CancellationToken) -> Result<SenkushaRes
         tag_remote,
         seq: seq_num_local,
         key_state: KeyState::new(),
+        recv_buf: vec![0u8; 65535],
     };
 
     // Negotiate the Takion protocol version first. chiaki-ng sends a
@@ -378,31 +399,15 @@ async fn wait_pong(
     cancel: &CancellationToken,
 ) -> Result<bool> {
     let deadline = Instant::now() + window;
-    loop {
-        if cancel.is_cancelled() {
-            return Err(Error::Canceled);
-        }
-        let now = Instant::now();
-        if now >= deadline {
-            return Ok(false);
-        }
-        let wait = (deadline - now).min(RESEND_INTERVAL);
-        match tokio::time::timeout(wait, conn.recv_event()).await {
-            Ok(Ok(Event::Av(av))) => {
-                if !av.is_video
-                    && av.frame_index == frame_index
-                    && av.unit_index == unit_index
-                    && av.data.len() >= 8
-                    && u32::from_be_bytes(av.data[4..8].try_into().unwrap()) == tag
-                {
-                    return Ok(true);
-                }
-            }
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => return Err(e),
-            Err(_) => {}
-        }
-    }
+    conn.wait_event(deadline, cancel, |event| {
+        matches!(event, Event::Av(av)
+            if !av.is_video
+                && av.frame_index == frame_index
+                && av.unit_index == unit_index
+                && av.data.len() >= 8
+                && u32::from_be_bytes(av.data[4..8].try_into().unwrap()) == tag)
+    })
+    .await
 }
 
 async fn mtu_in_test(conn: &mut Conn, rtt_us: u64, cancel: &CancellationToken) -> Result<u32> {
@@ -440,26 +445,12 @@ async fn wait_mtu_response(
     deadline: Instant,
     cancel: &CancellationToken,
 ) -> Result<bool> {
-    loop {
-        if cancel.is_cancelled() {
-            return Err(Error::Canceled);
-        }
-        let now = Instant::now();
-        if now >= deadline {
-            return Ok(false);
-        }
-        let wait = (deadline - now).min(RESEND_INTERVAL);
-        match tokio::time::timeout(wait, conn.recv_event()).await {
-            Ok(Ok(Event::Av(av))) => {
-                if av.is_video && av.frame_index == id {
-                    return Ok(true);
-                }
-            }
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => return Err(e),
-            Err(_) => {}
-        }
-    }
+    conn.wait_event(
+        deadline,
+        cancel,
+        |event| matches!(event, Event::Av(av) if av.is_video && av.frame_index == id),
+    )
+    .await
 }
 
 async fn mtu_out_test(

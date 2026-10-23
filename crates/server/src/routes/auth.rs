@@ -257,22 +257,22 @@ pub async fn login(
     let cookie = format!(
         "{COOKIE_NAME}={value}; HttpOnly; SameSite=Strict; Path=/; Max-Age={COOKIE_MAX_AGE}"
     );
-    let mut response = Json(serde_json::json!({ "ok": true })).into_response();
-    if let Ok(header_value) = HeaderValue::from_str(&cookie) {
-        response
-            .headers_mut()
-            .insert(header::SET_COOKIE, header_value);
-    }
-    response
+    json_with_cookie(&cookie)
 }
 
 pub async fn logout(Extension(auth): Extension<Auth>, headers: HeaderMap) -> Response {
     if let Some(value) = cookie(&headers, COOKIE_NAME) {
         auth.revoke_session(value);
     }
-    let cookie = format!("{COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
+    json_with_cookie(&format!(
+        "{COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"
+    ))
+}
+
+/// A JSON success response that clears or sets the session cookie.
+fn json_with_cookie(cookie: &str) -> Response {
     let mut response = Json(serde_json::json!({ "ok": true })).into_response();
-    if let Ok(header_value) = HeaderValue::from_str(&cookie) {
+    if let Ok(header_value) = HeaderValue::from_str(cookie) {
         response
             .headers_mut()
             .insert(header::SET_COOKIE, header_value);

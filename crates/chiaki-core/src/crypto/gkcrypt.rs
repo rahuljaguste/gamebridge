@@ -144,13 +144,30 @@ impl GKCrypt {
 
     /// XOR a buffer with the keystream at an arbitrary key position.
     /// This is symmetric: it performs both encryption and decryption.
+    ///
+    /// The keystream is generated block by block into a stack buffer; media
+    /// packets take this path, so it must not allocate per packet.
     pub fn crypt(&self, key_pos: u64, buf: &mut [u8]) -> Result<()> {
+        if buf.is_empty() {
+            return Ok(());
+        }
+        let cipher = Aes128Ecb::new_from_slice(&self.key_base).map_err(|_| Error::Unknown)?;
         let padding_pre = (key_pos % 16) as usize;
-        let full_size = (padding_pre + buf.len()).div_ceil(16) * 16;
-        let mut key_stream = vec![0u8; full_size];
-        self.gen_key_stream(key_pos - padding_pre as u64, &mut key_stream)?;
-        for (b, k) in buf.iter_mut().zip(&key_stream[padding_pre..]) {
-            *b ^= *k;
+        let mut counter_offset = (key_pos - padding_pre as u64) / 16;
+        let mut pos = 0usize;
+        let mut skip = padding_pre;
+        while pos < buf.len() {
+            let mut ctr = [0u8; 16];
+            Self::counter_add(&mut ctr, &self.iv, counter_offset);
+            counter_offset = counter_offset.wrapping_add(1);
+            let mut block = cipher::generic_array::GenericArray::clone_from_slice(&ctr);
+            cipher.encrypt_block(&mut block);
+            let take = (16 - skip).min(buf.len() - pos);
+            for i in 0..take {
+                buf[pos + i] ^= block[skip + i];
+            }
+            pos += take;
+            skip = 0;
         }
         Ok(())
     }

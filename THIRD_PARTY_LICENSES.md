@@ -51,7 +51,6 @@ compatible with that license; this file is an inventory, not legal advice.
 - utf8parse 0.2.2
 - uuid 1.28.0
 - zeroize 1.9.1
-- zeroize_derive 1.5.0
 
 ## Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
 

@@ -87,10 +87,6 @@ impl<T> ReorderQueue<T> {
         self.count -= 1;
         Some((seq, value))
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.count == 0
-    }
 }
 
 #[cfg(test)]

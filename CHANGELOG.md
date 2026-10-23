@@ -3,6 +3,40 @@
 All notable changes to GameBridge are documented here. The project follows
 semantic versioning; it is a Chiaki derivative and remains AGPL-3.0-only.
 
+## [0.8.6] - 2026-10-23
+
+### Added
+
+- A Beta badge beside the header wordmark.
+
+### Changed
+
+- Connection status and stream statistics now appear in a top-right overlay
+  over the video instead of the player bar and mobile stream menu.
+- The player bar and mobile stream menu use context-grouped icon controls
+  (Playback, View & connection, Console). Mobile menus pair each icon with a
+  label, and very short landscape screens lay the groups out as columns.
+- Pausing sends one neutral input frame so held keys, sticks, triggers, and
+  touch contacts are released on the console while paused.
+- Removed duplicated and dead code across the protocol core and server,
+  dropped unused `futures-util` and `zeroize` dependencies, and reduced
+  hot-path allocations in GKCrypt, audio forwarding, and the browser input
+  loop.
+
+### Fixed
+
+- Opening Settings no longer exits fullscreen. The whole document now enters
+  fullscreen, keeping Settings, PIN, authentication, and stream dialogs
+  visible. Only Stop or the explicit Exit fullscreen action leaves fullscreen.
+- Wake-from-rest accepts the same registration-key form as chiaki-ng.
+- Session teardown can no longer hang on a stalled WebRTC track writer, ctrl
+  write, or command queue; demo sessions are panic-guarded and always release
+  the session slot.
+- Timed-out starts and supervisor crashes are reported and cleaned up instead
+  of appearing as a clean stop.
+- Config and packet-stat locks recover after a panic instead of failing every
+  later request.
+
 ## [0.8.5] - 2026-10-21
 
 ### Fixed

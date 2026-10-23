@@ -23,4 +23,7 @@ pub mod takion;
 pub mod target;
 pub mod util;
 
+#[cfg(test)]
+mod test_support;
+
 pub use error::{Error, QuitReason, Result};

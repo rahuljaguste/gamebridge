@@ -8,7 +8,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use bytes::Bytes;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -58,7 +57,7 @@ pub async fn run(
             && at.elapsed() < CACHED_IDR_MAX_AGE
         {
             let index = cached.frame_index;
-            if send_frame(&writer, &shared, cached, frame_duration).await {
+            if send_frame(&writer, &shared, cached, frame_duration, &cancel).await {
                 last_frame = Some(index);
                 awaiting_idr = false;
             }
@@ -92,7 +91,7 @@ pub async fn run(
         }
 
         let index = frame.frame_index;
-        if send_frame(&writer, &shared, frame, frame_duration).await {
+        if send_frame(&writer, &shared, frame, frame_duration, &cancel).await {
             last_frame = Some(index);
             if awaiting_idr {
                 awaiting_idr = false;
@@ -110,26 +109,22 @@ async fn send_frame(
     shared: &MediaShared,
     frame: VideoFrame,
     frame_duration: Duration,
+    cancel: &CancellationToken,
 ) -> bool {
     let mut data = frame.data;
     if frame.is_idr && !frame.has_param_sets {
-        let param_sets = shared.param_sets.lock().unwrap().clone();
-        if !param_sets.is_empty() {
-            let mut combined =
-                Vec::with_capacity(data.len() + param_sets.iter().map(|b| b.len()).sum::<usize>());
-            for params in &param_sets {
-                combined.extend_from_slice(params);
-            }
-            combined.extend_from_slice(&data);
-            data = Bytes::from(combined);
-        }
+        data = shared.with_param_sets(data);
     }
     // RTP timestamps must advance at the stream's nominal frame rate, not by
     // however long the frame took to arrive. Arrival-derived durations make
     // the browser's render clock jitter whenever a frame is late, and the
     // jitter accumulates into visible stutter. The console encodes at the
     // requested `maxFps`, so a fixed 1/fps step is the correct timeline.
-    if let Err(e) = writer.write_sample(data, frame_duration).await {
+    let result = tokio::select! {
+        _ = cancel.cancelled() => return false,
+        result = writer.write_sample(data, frame_duration) => result,
+    };
+    if let Err(e) = result {
         tracing::warn!("video write failed: {e:#}");
         return false;
     }

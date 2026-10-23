@@ -214,10 +214,9 @@ pub async fn discover_host(host: IpAddr, duration: Duration) -> Result<Option<Di
     }
 }
 
-/// Send a wakeup packet. The reference client parses the regist key's raw
-/// bytes as an ASCII hex string; we do the same and report unsupported when
-/// the key does not fit.
-pub async fn wakeup(host: IpAddr, regist_key: &[u8; 16], ps5: bool) -> Result<()> {
+/// Parse the wakeup credential the way chiaki-ng does: truncate the decoded
+/// key at the first NUL and parse the remaining bytes as an ASCII hex number.
+fn wakeup_credential(regist_key: &[u8; 16]) -> Result<u64> {
     let end = regist_key.iter().position(|&b| b == 0).unwrap_or(16);
     let key = &regist_key[..end];
     if key.len() > 8 {
@@ -227,8 +226,14 @@ pub async fn wakeup(host: IpAddr, regist_key: &[u8; 16], ps5: bool) -> Result<()
     }
     let text = std::str::from_utf8(key)
         .map_err(|_| Error::Unsupported("regist key is not ASCII hex".into()))?;
-    let credential = u64::from_str_radix(text, 16)
-        .map_err(|_| Error::Unsupported("regist key is not ASCII hex".into()))?;
+    u64::from_str_radix(text, 16)
+        .map_err(|_| Error::Unsupported("regist key is not ASCII hex".into()))
+}
+
+/// Send a wakeup packet. The console's discovery protocol takes the
+/// registration key as the numeric value of its ASCII hex representation.
+pub async fn wakeup(host: IpAddr, regist_key: &[u8; 16], ps5: bool) -> Result<()> {
+    let credential = wakeup_credential(regist_key)?;
     let sock = UdpSocket::bind("0.0.0.0:0")
         .await
         .map_err(|_| Error::Network)?;
@@ -269,6 +274,28 @@ mod tests {
         assert!(s.contains("user-credential:4660\n"));
         assert!(s.contains("device-discovery-protocol-version:00030010\n"));
         assert_eq!(*p.last().unwrap(), 0);
+    }
+
+    #[test]
+    fn wakeup_credential_matches_the_hex_key_text() {
+        // chiaki-ng truncates at the first NUL and parses the ASCII hex text.
+        let mut key = [0u8; 16];
+        key[..8].copy_from_slice(b"12345678");
+        assert_eq!(wakeup_credential(&key).unwrap(), 0x1234_5678);
+
+        let mut short = [0u8; 16];
+        short[..4].copy_from_slice(b"1234");
+        assert_eq!(wakeup_credential(&short).unwrap(), 0x1234);
+
+        let mut too_long = [0u8; 16];
+        too_long[..9].copy_from_slice(b"123456789");
+        assert!(wakeup_credential(&too_long).is_err());
+
+        // Raw binary bytes are not a hex string, and an empty key is invalid.
+        let mut binary = [0u8; 16];
+        binary[..4].copy_from_slice(&[0x12, 0x34, 0x56, 0x78]);
+        assert!(wakeup_credential(&binary).is_err());
+        assert!(wakeup_credential(&[0u8; 16]).is_err());
     }
 
     #[test]

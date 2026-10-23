@@ -18,3 +18,23 @@ pub struct MediaShared {
     pub latency_ms: Mutex<Option<f64>>,
     pub first_idr_sent: AtomicBool,
 }
+
+impl MediaShared {
+    /// Prepend the cached parameter sets to an access unit that lacks them.
+    pub fn with_param_sets(&self, data: Bytes) -> Bytes {
+        let param_sets = self
+            .param_sets
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if param_sets.is_empty() {
+            return data;
+        }
+        let mut combined =
+            Vec::with_capacity(data.len() + param_sets.iter().map(Bytes::len).sum::<usize>());
+        for params in param_sets.iter() {
+            combined.extend_from_slice(params);
+        }
+        combined.extend_from_slice(&data);
+        Bytes::from(combined)
+    }
+}

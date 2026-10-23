@@ -48,6 +48,17 @@ a { color: inherit; }
 
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .hidden { display: none !important; }
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
 .muted { color: var(--muted); }
 .subtle { color: var(--muted); font-size: 12px; line-height: 1.45; }
 .hint { color: var(--muted); font-size: 12px; line-height: 1.5; }
@@ -68,6 +79,22 @@ a { color: inherit; }
 body.player-active .topbar { display: none; }
 .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
 .brand h1 { font-size: 17px; font-weight: 650; letter-spacing: .005em; color: rgba(255, 255, 255, .9); line-height: 1.15; }
+.beta-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 7px;
+  padding: 2px 7px;
+  border: 1px solid rgba(111, 155, 255, .34);
+  border-radius: 999px;
+  background: rgba(111, 155, 255, .13);
+  color: #9db9ff;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: .08em;
+  line-height: 1.4;
+  text-transform: uppercase;
+  vertical-align: 2px;
+}
 .brand-mark {
   width: 38px;
   height: 38px;
@@ -138,7 +165,6 @@ body.player-active .topbar { display: none; }
 }
 .quiet:hover { color: var(--text); background: rgba(255, 255, 255, .06); }
 .small { padding: 7px 12px; font-size: 12px; }
-.block { display: flex; align-items: center; justify-content: center; text-decoration: none; }
 .icon-btn {
   width: 32px;
   height: 32px;
@@ -550,8 +576,8 @@ body.player-active .topbar { display: none; }
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 18px;
-  padding: 10px 12px 10px 18px;
+  gap: 0;
+  padding: 9px 13px;
   max-width: calc(100vw - 24px);
   background: rgba(15, 17, 23, .78);
   border: 1px solid rgba(255, 255, 255, .12);
@@ -561,31 +587,6 @@ body.player-active .topbar { display: none; }
   z-index: 10;
 }
 
-/*
- * The on-screen controller owns the bottom corners. Dock the player bar at
- * the top centre while it is active, in a single scrollable row, so it cannot
- * cover either stick or the face buttons and swallow their pointer events.
- */
-body.touch-controls-active .player-bar {
-  top: calc(64px + env(safe-area-inset-top, 0px));
-  bottom: auto;
-  left: 50%;
-  right: auto;
-  transform: translateX(-50%);
-  width: min(680px, calc(100vw - 240px));
-  max-width: calc(100vw - 24px);
-  flex-wrap: nowrap;
-  justify-content: flex-start;
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  touch-action: pan-x;
-  scrollbar-width: none;
-}
-body.touch-controls-active .player-bar::-webkit-scrollbar { display: none; }
-body.touch-controls-active .player-bar > * { flex: none; }
-body.touch-controls-active .player-actions { flex-wrap: nowrap; }
-body.touch-controls-active .player-meta .stats { display: none; }
-.player-meta { display: flex; align-items: center; gap: 12px; }
 .status-pill {
   padding: 4px 10px;
   border-radius: 999px;
@@ -600,7 +601,53 @@ body.touch-controls-active .player-meta .stats { display: none; }
 .status-pill.live { color: var(--ok); border-color: rgba(74, 222, 154, .35); }
 .status-pill.bad { color: var(--danger); border-color: rgba(255, 107, 120, .35); }
 .stats { color: var(--muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.player-actions { display: flex; align-items: center; gap: 6px; }
+.player-hud {
+  position: absolute;
+  top: max(14px, env(safe-area-inset-top, 0px));
+  right: max(14px, env(safe-area-inset-right, 0px));
+  z-index: 7;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 5px;
+  max-width: min(72vw, 360px);
+  text-align: right;
+  pointer-events: none;
+}
+.player-hud .status-pill {
+  background: rgba(10, 12, 18, .68);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .3);
+}
+.player-hud .stats {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(10, 12, 18, .55);
+  backdrop-filter: blur(10px);
+  font-size: 11px;
+  white-space: normal;
+}
+body.touch-controls-active .player-hud {
+  top: calc(126px + env(safe-area-inset-top, 0px));
+}
+/* Short landscape: the right stick starts just below the shoulders, so the
+ * HUD becomes one compact row in the gap above it. */
+@media (max-height: 460px) and (orientation: landscape) {
+  body.touch-controls-active .player-hud {
+    top: calc(76px + env(safe-area-inset-top, 0px));
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    max-width: none;
+  }
+  body.touch-controls-active .player-hud .stats { white-space: nowrap; }
+}
+.player-actions { display: flex; align-items: center; gap: 12px; }
+.player-group { display: flex; align-items: center; gap: 4px; }
+.player-group + .player-group {
+  padding-left: 12px;
+  border-left: 1px solid rgba(255, 255, 255, .12);
+}
 .volume-control { display: flex; align-items: center; gap: 6px; }
 .volume-mute {
   display: grid;
@@ -632,15 +679,29 @@ body.touch-controls-active .player-meta .stats { display: none; }
   cursor: pointer;
 }
 .player-btn {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
   border: 0;
+  border-radius: 50%;
   background: rgba(255, 255, 255, .08);
   color: var(--text);
-  padding: 8px 14px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 550;
   white-space: nowrap;
 }
+.player-btn svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.player-btn .icon-play { display: none; fill: currentColor; stroke: none; }
+.player-btn.paused .icon-pause { display: none; }
+.player-btn.paused .icon-play { display: block; }
 .player-btn:hover { background: rgba(255, 255, 255, .14); }
 .player-btn.danger { color: var(--danger); background: rgba(255, 107, 120, .12); }
 .player-btn.danger:hover { background: rgba(255, 107, 120, .2); }
@@ -978,20 +1039,26 @@ body.touch-menu-open .touch-controls { display: none !important; }
   color: var(--text);
   font-weight: 650;
 }
-.touch-menu-status {
+.touch-menu-sections {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 8px 0;
-  min-height: 24px;
+  flex-direction: column;
+  gap: 14px;
 }
-.touch-menu-status .stats { overflow: hidden; text-overflow: ellipsis; }
+.touch-menu-section { display: flex; flex-direction: column; gap: 7px; }
+.touch-menu-label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
 .touch-menu-volume {
   display: flex;
   flex-direction: row;
   align-items: center;
   gap: 12px;
-  margin-bottom: 10px;
+  margin: 1px 0 0;
   color: var(--muted);
   font-size: 12px;
 }
@@ -1007,16 +1074,35 @@ body.touch-menu-open .touch-controls { display: none !important; }
   gap: 8px;
 }
 .touch-menu-action {
-  min-height: 44px;
-  padding: 7px 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 58px;
+  padding: 8px 6px;
   border: 1px solid rgba(255, 255, 255, .14);
   border-radius: 12px;
   background: rgba(255, 255, 255, .055);
   color: var(--text);
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 650;
-  line-height: 1.25;
+  line-height: 1.2;
+  text-align: center;
 }
+.touch-menu-action svg {
+  width: 21px;
+  height: 21px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.touch-menu-action .icon-play { display: none; fill: currentColor; stroke: none; }
+.touch-menu-action.paused .icon-pause { display: none; }
+.touch-menu-action.paused .icon-play { display: block; }
 .touch-menu-action:active {
   background: rgba(111, 155, 255, .35);
   border-color: rgba(180, 205, 255, .7);
@@ -1035,15 +1121,39 @@ body.touch-menu-open .touch-controls { display: none !important; }
   .touch-menu-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
-@media (max-height: 340px) and (orientation: landscape) {
+@media (max-height: 460px) and (orientation: landscape) {
   .touch-menu-panel { padding: 10px; }
+  .touch-menu-head {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    padding-top: 4px;
+    margin-top: -4px;
+    background: rgba(15, 17, 23, .98);
+  }
   .touch-menu-head .eyebrow { display: none; }
   .touch-menu-head h3 { font-size: 17px; }
-  .touch-menu-status { margin: 4px 0 6px; min-height: 20px; }
-  .touch-menu-volume { margin-bottom: 8px; }
+  .touch-menu-sections { gap: 7px; }
+  .touch-menu-section { gap: 5px; }
   .touch-menu-grid { gap: 6px; }
-  .touch-menu-action { font-size: 10px; padding: 4px 6px; }
+  .touch-menu-action { min-height: 44px; font-size: 10px; padding: 5px 4px; }
+  .touch-menu-action svg { width: 18px; height: 18px; }
   .touch-menu-note { display: none; }
+}
+
+/* Very short landscape (e.g. 568x320): lay the three context groups out as
+ * columns so every action, including Stop, stays above the fold. */
+@media (max-height: 340px) and (orientation: landscape) {
+  .touch-menu-sections {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-items: start;
+    gap: 8px;
+  }
+  .touch-menu-section { gap: 4px; }
+  .touch-menu-grid { grid-template-columns: 1fr; gap: 4px; }
+  .touch-menu-action { min-height: 40px; }
+  .touch-menu-volume { margin-top: 2px; }
 }
 
 .rotate-hint {
@@ -1330,19 +1440,6 @@ details > summary::-webkit-details-marker { display: none; }
 .slider-row { display: flex; align-items: center; gap: 10px; }
 .slider-row input[type="range"] { flex: 1; padding: 0; border: 0; background: transparent; accent-color: var(--accent); }
 .slider-value { min-width: 3ch; text-align: right; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-.legend { border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; }
-.legend > summary { color: var(--muted); font-size: 12px; display: flex; align-items: center; justify-content: space-between; }
-.legend > summary::after { content: "⌄"; }
-.legend[open] > summary::after { content: "⌃"; }
-.legend[open] > summary { margin-bottom: 10px; }
-.legend-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 7px 14px;
-  margin-bottom: 10px;
-  color: var(--muted);
-  font-size: 12px;
-}
 .binding-head {
   display: flex;
   align-items: flex-end;
@@ -1403,17 +1500,6 @@ details > summary::-webkit-details-marker { display: none; }
   line-height: 1;
 }
 .binding-clear:hover:not(:disabled) { background: rgba(255, 255, 255, .07); color: var(--text); }
-kbd {
-  display: inline-block;
-  padding: 1px 6px;
-  margin-right: 4px;
-  border: 1px solid var(--line);
-  border-bottom-width: 2px;
-  border-radius: 5px;
-  background: rgba(255, 255, 255, .05);
-  color: var(--text);
-  font: 10.5px ui-monospace, SFMono-Regular, Menlo, monospace;
-}
 
 /* ── Detect status ─────────────────────────────────────────────────────── */
 .detect-status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; min-height: 16px; }
@@ -1559,10 +1645,11 @@ body.touch-controls-active .toast {
     border-radius: 18px;
     flex-wrap: wrap;
   }
-  .player-meta { gap: 8px; }
-  .player-meta .stats { display: none; }
-  .player-actions { gap: 4px; flex-wrap: wrap; justify-content: center; }
-  .player-btn { padding: 7px 10px; font-size: 12px; }
+  .player-actions { gap: 6px; flex-wrap: wrap; justify-content: center; }
+  .player-group { gap: 3px; }
+  .player-group + .player-group { padding-left: 8px; }
+  .player-btn { width: 32px; height: 32px; }
+  .player-btn svg { width: 17px; height: 17px; }
   .volume-mute { width: 30px; height: 30px; padding: 0; }
   .volume-slider { width: 64px; }
 }
@@ -1573,12 +1660,21 @@ body.touch-controls-active .toast {
   .home-header h2 { font-size: 33px; }
   .tile-monogram { font-size: 104px; }
   .player-bar { justify-content: center; }
-  .player-meta { width: 100%; justify-content: center; }
+  /* A wrapped row must not start with a group divider. */
+  .player-actions { gap: 10px; }
+  .player-group + .player-group { padding-left: 0; border-left: 0; }
 }
 
 @media (max-width: 360px) {
+  .topbar {
+    padding-left: max(14px, env(safe-area-inset-left, 0px));
+    padding-right: max(14px, env(safe-area-inset-right, 0px));
+  }
   .brand-mark { width: 34px; height: 34px; }
-  .brand h1 { font-size: 16px; }
+  .brand h1 { font-size: 15px; letter-spacing: 0; white-space: nowrap; }
+  /* Keep the wordmark and Beta badge on one line beside the header buttons. */
+  .brand { gap: 8px; }
+  .beta-badge { margin-left: 4px; padding: 2px 6px; }
 }
 
 @media (max-height: 460px) and (orientation: landscape) {

@@ -25,12 +25,9 @@ pub const MSG_LOGIN_PIN_REQ: u16 = 0x4;
 pub const MSG_LOGIN_PIN_REP: u16 = 0x8004;
 pub const MSG_LOGIN: u16 = 0x5;
 pub const MSG_GOTO_BED: u16 = 0x50;
-pub const MSG_KEYBOARD_ENABLE_TOGGLE: u16 = 0x20;
 pub const MSG_KEYBOARD_OPEN: u16 = 0x21;
 pub const MSG_KEYBOARD_CLOSE_REMOTE: u16 = 0x22;
-pub const MSG_KEYBOARD_TEXT_CHANGE_REQ: u16 = 0x23;
 pub const MSG_KEYBOARD_TEXT_CHANGE_RES: u16 = 0x24;
-pub const MSG_KEYBOARD_CLOSE_REQ: u16 = 0x25;
 const MSG_ENABLE_DUALSENSE: u16 = 0x13;
 const MSG_DUALSENSE_CONNECT: u16 = 0x11;
 const MSG_MIC_TOGGLE: u16 = 0x36;
@@ -45,12 +42,8 @@ const MAX_FRAME: usize = 1 << 20;
 
 #[derive(Debug)]
 pub enum CtrlCommand {
-    Send { ty: u16, payload: Vec<u8> },
     SetLoginPin(Vec<u8>),
     GotoBed,
-    KeyboardSetText(String),
-    KeyboardAccept,
-    KeyboardReject,
     Stop,
 }
 
@@ -58,7 +51,6 @@ pub enum CtrlCommand {
 pub enum CtrlEvent {
     SessionId(String),
     LoginPinRequest,
-    LoginSuccess,
     LoginPinIncorrect,
     Error(Error),
     Closed,
@@ -73,7 +65,9 @@ pub struct CtrlHandle {
 
 impl CtrlHandle {
     pub async fn stop(mut self) {
-        let _ = self.commands.send(CtrlCommand::Stop).await;
+        // Never block teardown on a full command queue; cancellation below
+        // stops the supervisor regardless.
+        let _ = self.commands.try_send(CtrlCommand::Stop);
         self.cancel.cancel();
         let _ = timeout(Duration::from_secs(2), &mut self.join).await;
         self.join.abort();
@@ -95,7 +89,6 @@ pub struct CtrlConnection {
     pub crypt: RPCrypt,
     pub local_counter: u64,
     pub remote_counter: u64,
-    pub server_type: Option<u8>,
     pub buffered: BytesMut,
     pub enable_dualsense: bool,
 }
@@ -219,7 +212,6 @@ pub async fn connect(
         crypt,
         local_counter,
         remote_counter,
-        server_type,
         buffered,
         enable_dualsense: info.enable_dualsense,
     })
@@ -251,7 +243,6 @@ async fn run(
     let mut remote_counter = connection.remote_counter;
     let mut buf = connection.buffered;
     let mut login_pin_requested = false;
-    let mut keyboard_counter: u32 = 0;
     let enable_dualsense = connection.enable_dualsense;
     let idle = tokio::time::sleep(CTRL_IDLE_TIMEOUT);
     tokio::pin!(idle);
@@ -301,9 +292,7 @@ async fn run(
                     let _ = events.send(CtrlEvent::LoginPinRequest);
                 }
                 MSG_LOGIN => match payload.first().copied() {
-                    Some(0) => {
-                        let _ = events.send(CtrlEvent::LoginSuccess);
-                    }
+                    Some(0) => {}
                     Some(1) => {
                         let _ = events.send(CtrlEvent::LoginPinIncorrect);
                         if login_pin_requested {
@@ -351,25 +340,12 @@ async fn run(
             command = commands.recv() => {
                 let Some(command) = command else { break };
                 let result = match command {
-                    CtrlCommand::Send { ty, payload } => {
-                        send_message(&mut writer, &crypt, &mut local_counter, ty, &payload).await
-                    }
                     CtrlCommand::SetLoginPin(pin) => {
                         login_pin_requested = false;
                         send_message(&mut writer, &crypt, &mut local_counter, MSG_LOGIN_PIN_REP, &pin).await
                     }
                     CtrlCommand::GotoBed => {
                         send_message(&mut writer, &crypt, &mut local_counter, MSG_GOTO_BED, &[]).await
-                    }
-                    CtrlCommand::KeyboardSetText(text) => {
-                        let payload = keyboard_text_payload(&text, &mut keyboard_counter);
-                        send_message(&mut writer, &crypt, &mut local_counter, MSG_KEYBOARD_TEXT_CHANGE_REQ, &payload).await
-                    }
-                    CtrlCommand::KeyboardAccept => {
-                        send_message(&mut writer, &crypt, &mut local_counter, MSG_KEYBOARD_CLOSE_REQ, &[0, 0, 0, 0]).await
-                    }
-                    CtrlCommand::KeyboardReject => {
-                        send_message(&mut writer, &crypt, &mut local_counter, MSG_KEYBOARD_CLOSE_REQ, &[0, 0, 0, 1]).await
                     }
                     CtrlCommand::Stop => break,
                 };
@@ -380,18 +356,6 @@ async fn run(
             }
         }
     }
-}
-
-fn keyboard_text_payload(text: &str, counter: &mut u32) -> Vec<u8> {
-    // CtrlKeyboardTextRequestMessage: counter, len, 8 unknown, 16 unknown, len.
-    let mut payload = vec![0u8; 0x24];
-    *counter = counter.wrapping_add(1);
-    payload[0..4].copy_from_slice(&counter.to_be_bytes());
-    let len = text.len() as u32;
-    payload[4..8].copy_from_slice(&len.to_be_bytes());
-    payload[0x20..0x24].copy_from_slice(&len.to_be_bytes());
-    payload.extend_from_slice(text.as_bytes());
-    payload
 }
 
 fn parse_session_id(payload: &[u8]) -> Option<String> {
@@ -533,12 +497,17 @@ async fn send_message(
     let mut header = [0u8; 8];
     header[0..4].copy_from_slice(&(payload.len() as u32).to_be_bytes());
     header[4..6].copy_from_slice(&ty.to_be_bytes());
-    writer
-        .write_all(&header)
+    // A console that stops reading its socket must not wedge the ctrl task:
+    // every write is bounded by the same timeout as the read path.
+    timeout(CTRL_TIMEOUT, writer.write_all(&header))
         .await
+        .map_err(|_| Error::Timeout)?
         .map_err(|_| Error::Network)?;
     if !enc.is_empty() {
-        writer.write_all(&enc).await.map_err(|_| Error::Network)?;
+        timeout(CTRL_TIMEOUT, writer.write_all(&enc))
+            .await
+            .map_err(|_| Error::Timeout)?
+            .map_err(|_| Error::Network)?;
     }
     Ok(())
 }

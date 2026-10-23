@@ -161,14 +161,30 @@ impl State {
     /// Compute the GMAC over `buf`, temporarily zeroing the MAC and (for
     /// control/congestion packets) the key-position field.
     fn packet_mac(&mut self, key_pos: u64, buf: &mut [u8]) -> Result<[u8; 4]> {
+        let crypt = self.gkcrypt_local.as_mut().ok_or(Error::Uninitialized)?;
+        Self::gmac_with_zeroed_fields(crypt, key_pos, buf)
+    }
+
+    fn packet_mac_remote(&mut self, key_pos: u64, buf: &mut [u8]) -> Result<[u8; 4]> {
+        let crypt = self.gkcrypt_remote.as_mut().ok_or(Error::Uninitialized)?;
+        Self::gmac_with_zeroed_fields(crypt, key_pos, buf)
+    }
+
+    fn gmac_with_zeroed_fields(
+        crypt: &mut GKCrypt,
+        key_pos: u64,
+        buf: &mut [u8],
+    ) -> Result<[u8; 4]> {
         let base = base_type(buf)?;
         let mac_off = mac_offset(base).ok_or(Error::InvalidData)?;
         let key_off = key_pos_offset(base).ok_or(Error::InvalidData)?;
-        if buf.len() < mac_off + GKCRYPT_GMAC_SIZE || buf.len() < key_off + 4 {
+        if buf.len() < mac_off + GKCRYPT_GMAC_SIZE || buf.len() < key_off + GKCRYPT_GMAC_SIZE {
             return Err(Error::BufferTooSmall);
         }
-        let saved_mac: [u8; 4] = buf[mac_off..mac_off + 4].try_into().unwrap();
-        buf[mac_off..mac_off + 4].fill(0);
+        let saved_mac: [u8; 4] = buf[mac_off..mac_off + GKCRYPT_GMAC_SIZE]
+            .try_into()
+            .unwrap();
+        buf[mac_off..mac_off + GKCRYPT_GMAC_SIZE].fill(0);
         let zero_key_pos = matches!(base, PACKET_TYPE_CONTROL | PACKET_TYPE_CONGESTION);
         let saved_key_pos: Option<[u8; 4]> = if zero_key_pos {
             let k: [u8; 4] = buf[key_off..key_off + 4].try_into().unwrap();
@@ -177,12 +193,11 @@ impl State {
         } else {
             None
         };
-        let crypt = self.gkcrypt_local.as_mut().ok_or(Error::Uninitialized)?;
         let tag = crypt.gmac(key_pos, buf)?;
         if let Some(k) = saved_key_pos {
             buf[key_off..key_off + 4].copy_from_slice(&k);
         }
-        buf[mac_off..mac_off + 4].copy_from_slice(&saved_mac);
+        buf[mac_off..mac_off + GKCRYPT_GMAC_SIZE].copy_from_slice(&saved_mac);
         Ok(tag)
     }
 
@@ -207,55 +222,17 @@ impl State {
         Ok(())
     }
 
-    fn packet_mac_remote(&mut self, key_pos: u64, buf: &mut [u8]) -> Result<[u8; 4]> {
-        let base = base_type(buf)?;
-        let mac_off = mac_offset(base).ok_or(Error::InvalidData)?;
-        let key_off = key_pos_offset(base).ok_or(Error::InvalidData)?;
-        let saved_mac: [u8; 4] = buf[mac_off..mac_off + 4].try_into().unwrap();
-        buf[mac_off..mac_off + 4].fill(0);
-        let zero_key_pos = matches!(base, PACKET_TYPE_CONTROL | PACKET_TYPE_CONGESTION);
-        let saved_key_pos = if zero_key_pos {
-            let k: [u8; 4] = buf[key_off..key_off + 4].try_into().unwrap();
-            buf[key_off..key_off + 4].fill(0);
-            Some(k)
-        } else {
-            None
-        };
-        let crypt = self.gkcrypt_remote.as_mut().ok_or(Error::Uninitialized)?;
-        let tag = crypt.gmac(key_pos, buf)?;
-        if let Some(k) = saved_key_pos {
-            buf[key_off..key_off + 4].copy_from_slice(&k);
+    /// Seal a control packet with the local GMAC when encryption is active.
+    fn seal_control(&mut self, key_pos: u64, packet: &mut [u8]) -> Result<()> {
+        if self.gkcrypt_local.is_some() {
+            let tag = self.packet_mac(key_pos, packet)?;
+            packet[5..9].copy_from_slice(&tag);
         }
-        buf[mac_off..mac_off + 4].copy_from_slice(&saved_mac);
-        Ok(tag)
+        Ok(())
     }
 
     fn build_message_data(&mut self, flags: u8, channel: u16, payload: &[u8]) -> Result<Vec<u8>> {
-        let key_pos = self.crypt_advance(payload.len());
-        let packet_size = 1 + MESSAGE_HEADER_SIZE + 9 + payload.len();
-        let mut packet = vec![0u8; packet_size];
-        packet[0] = PACKET_TYPE_CONTROL;
-        write_message_header(
-            &mut packet[1..],
-            self.tag_remote,
-            key_pos,
-            CHUNK_TYPE_DATA,
-            flags,
-            9 + payload.len(),
-        );
-        let seq = self.seq_num_local;
-        self.seq_num_local = self.seq_num_local.wrapping_add(1);
-        let p = &mut packet[1 + MESSAGE_HEADER_SIZE..];
-        p[0..4].copy_from_slice(&seq.to_be_bytes());
-        p[4..6].copy_from_slice(&channel.to_be_bytes());
-        p[6..8].fill(0);
-        p[8] = 0; // protobuf data type
-        p[9..].copy_from_slice(payload);
-        if self.gkcrypt_local.is_some() {
-            let tag = self.packet_mac(key_pos, &mut packet)?;
-            packet[5..9].copy_from_slice(&tag);
-        }
-        Ok(packet)
+        self.build_data_packet(flags, channel, payload, true)
     }
 
     /// Build a stream-control DATA message (CORRUPTFRAME / IDRREQUEST).
@@ -265,18 +242,30 @@ impl State {
         self.build_message_data(STREAM_CONTROL_FLAGS, STREAM_CONTROL_CHANNEL, payload)
     }
 
-    /// Build a continuation chunk of a fragmented DATA message. Unlike a
-    /// normal DATA chunk the 8-byte data header carries no protobuf data-type
-    /// byte, so the payload starts at offset 8 (chiaki-ng
-    /// `chiaki_takion_send_message_data_cont`).
+    /// Build a continuation chunk of a fragmented DATA message.
     fn build_message_data_cont(
         &mut self,
         flags: u8,
         channel: u16,
         payload: &[u8],
     ) -> Result<Vec<u8>> {
+        self.build_data_packet(flags, channel, payload, false)
+    }
+
+    /// Build a DATA chunk. A normal chunk's 8-byte data header ends with a
+    /// protobuf data-type byte; a continuation chunk has no such byte, so its
+    /// payload starts at offset 8 (chiaki-ng
+    /// `chiaki_takion_send_message_data_cont`).
+    fn build_data_packet(
+        &mut self,
+        flags: u8,
+        channel: u16,
+        payload: &[u8],
+        has_data_type: bool,
+    ) -> Result<Vec<u8>> {
+        let data_header_size = if has_data_type { 9 } else { 8 };
         let key_pos = self.crypt_advance(payload.len());
-        let packet_size = 1 + MESSAGE_HEADER_SIZE + 8 + payload.len();
+        let packet_size = 1 + MESSAGE_HEADER_SIZE + data_header_size + payload.len();
         let mut packet = vec![0u8; packet_size];
         packet[0] = PACKET_TYPE_CONTROL;
         write_message_header(
@@ -285,7 +274,7 @@ impl State {
             key_pos,
             CHUNK_TYPE_DATA,
             flags,
-            8 + payload.len(),
+            data_header_size + payload.len(),
         );
         let seq = self.seq_num_local;
         self.seq_num_local = self.seq_num_local.wrapping_add(1);
@@ -293,11 +282,13 @@ impl State {
         p[0..4].copy_from_slice(&seq.to_be_bytes());
         p[4..6].copy_from_slice(&channel.to_be_bytes());
         p[6..8].fill(0);
-        p[8..].copy_from_slice(payload);
-        if self.gkcrypt_local.is_some() {
-            let tag = self.packet_mac(key_pos, &mut packet)?;
-            packet[5..9].copy_from_slice(&tag);
+        if has_data_type {
+            p[8] = 0; // protobuf data type
+            p[9..].copy_from_slice(payload);
+        } else {
+            p[8..].copy_from_slice(payload);
         }
+        self.seal_control(key_pos, &mut packet)?;
         Ok(packet)
     }
 
@@ -317,10 +308,7 @@ impl State {
         p[0..4].copy_from_slice(&seq_num.to_be_bytes());
         p[4..8].copy_from_slice(&self.a_rwnd.to_be_bytes());
         p[8..12].fill(0);
-        if self.gkcrypt_local.is_some() {
-            let tag = self.packet_mac(key_pos, &mut packet)?;
-            packet[5..9].copy_from_slice(&tag);
-        }
+        self.seal_control(key_pos, &mut packet)?;
         Ok(packet)
     }
 
@@ -335,26 +323,10 @@ impl State {
         Ok(packet.to_vec())
     }
 
-    fn build_feedback(&mut self, seq_num: u16, payload: &[u8]) -> Result<Vec<u8>> {
+    fn build_feedback(&mut self, packet_type: u8, seq_num: u16, payload: &[u8]) -> Result<Vec<u8>> {
         let key_pos = self.crypt_advance(payload.len() + GKCRYPT_BLOCK_SIZE);
         let mut packet = vec![0u8; 0xc + payload.len()];
-        packet[0] = PACKET_TYPE_FEEDBACK_STATE;
-        packet[1..3].copy_from_slice(&seq_num.to_be_bytes());
-        packet[3] = 0;
-        packet[4..8].copy_from_slice(&(key_pos as u32).to_be_bytes());
-        packet[8..12].fill(0);
-        packet[12..].copy_from_slice(payload);
-        let crypt = self.gkcrypt_local.as_mut().ok_or(Error::Uninitialized)?;
-        crypt.encrypt(key_pos + GKCRYPT_BLOCK_SIZE as u64, &mut packet[12..])?;
-        let tag = crypt.gmac(key_pos, &packet)?;
-        packet[8..12].copy_from_slice(&tag);
-        Ok(packet)
-    }
-
-    fn build_feedback_history(&mut self, seq_num: u16, payload: &[u8]) -> Result<Vec<u8>> {
-        let key_pos = self.crypt_advance(payload.len() + GKCRYPT_BLOCK_SIZE);
-        let mut packet = vec![0u8; 0xc + payload.len()];
-        packet[0] = PACKET_TYPE_FEEDBACK_HISTORY;
+        packet[0] = packet_type;
         packet[1..3].copy_from_slice(&seq_num.to_be_bytes());
         packet[3] = 0;
         packet[4..8].copy_from_slice(&(key_pos as u32).to_be_bytes());
@@ -373,7 +345,7 @@ impl State {
         } else {
             format_v12(&state).to_vec()
         };
-        self.build_feedback(seq_num, &payload)
+        self.build_feedback(PACKET_TYPE_FEEDBACK_STATE, seq_num, &payload)
     }
 
     fn flush_data_queue(
@@ -721,7 +693,7 @@ async fn handle_command(
             }
         }
         TakionCommand::SendFeedbackHistory { seq, payload } => {
-            if let Ok(packet) = state.build_feedback_history(seq, &payload) {
+            if let Ok(packet) = state.build_feedback(PACKET_TYPE_FEEDBACK_HISTORY, seq, &payload) {
                 let _ = sock.send(&packet).await;
             }
         }
@@ -1016,7 +988,9 @@ mod format_tests {
         assert_eq!(state.key_pos_local, 108);
 
         // Feedback advances by payload + 16, rounded up.
-        state.build_feedback(0, &[0; 17]).unwrap();
+        state
+            .build_feedback(PACKET_TYPE_FEEDBACK_STATE, 0, &[0; 17])
+            .unwrap();
         assert_eq!(state.key_pos_local, 142);
     }
 }

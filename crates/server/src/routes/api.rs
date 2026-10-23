@@ -258,12 +258,7 @@ pub async fn detect(
     if host.is_empty() {
         return Err(ApiError::bad_request("host is required"));
     }
-    let ip = tokio::net::lookup_host((host, 0))
-        .await
-        .map_err(|_| ApiError::bad_request("could not resolve host"))?
-        .find(|addr| addr.is_ipv4())
-        .map(|addr| addr.ip())
-        .ok_or_else(|| ApiError::bad_request("no IPv4 address for host"))?;
+    let ip = resolve_console_ip(host).await?;
     let found = discovery::discover_host(ip, Duration::from_millis(1200))
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?
@@ -441,16 +436,9 @@ pub async fn start_session(
     // Hold the reservation for the whole setup so a double-click cannot start
     // two console sessions before either reaches the `active` check.
     let start = state
-        .begin_start()
+        .reserve_session_start()
+        .await
         .ok_or_else(|| ApiError::conflict("a session is already active"))?;
-    {
-        let active = state.active.lock().await;
-        if active.is_some() {
-            return Err(ApiError::conflict("a session is already active"));
-        }
-    }
-    state.clear_replay();
-    *state.last_session_error.lock().await = None;
     let host = state
         .config
         .get(&request.host_id)

@@ -25,10 +25,6 @@ impl Target {
         matches!(self, Target::Ps4Unknown | Target::Ps5Unknown)
     }
 
-    pub fn is_ps4_pre10(self) -> bool {
-        self == Target::Ps4_8 || self == Target::Ps4_9
-    }
-
     /// RP-Version string used in HTTP headers and the launch spec.
     pub fn rp_version(self) -> Option<&'static str> {
         match self {
