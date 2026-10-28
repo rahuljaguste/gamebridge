@@ -4,9 +4,10 @@
 //! The token is configured on the command line or read from a file. A browser
 //! verifies it once at `/api/auth/login` and receives an HttpOnly,
 //! SameSite=Strict cookie containing a random, server-side session id; scripts
-//! can use `Authorization: Bearer <token>`. Only a SHA-256 digest of the
-//! configured token and of each session id is kept in memory, so neither a
-//! cookie nor a memory dump is directly reusable.
+//! can use `Authorization: Bearer <token>`. When `--trust-proxy` is set and
+//! the proxy reports HTTPS, the cookie is also marked `Secure`. Only a SHA-256
+//! digest of the configured token and of each session id is kept in memory, so
+//! neither a cookie nor a memory dump is directly reusable.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -54,6 +55,8 @@ pub struct Auth {
     sessions: Arc<Mutex<HashMap<[u8; 32], Instant>>>,
     /// Per-source failed-authentication counts used to slow down guessing.
     failures: Arc<Mutex<HashMap<IpAddr, FailureWindow>>>,
+    /// Honor `X-Forwarded-Proto` from a reverse proxy when setting cookies.
+    trust_proxy: bool,
 }
 
 impl Auth {
@@ -62,6 +65,7 @@ impl Auth {
             expected: None,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             failures: Arc::new(Mutex::new(HashMap::new())),
+            trust_proxy: false,
         }
     }
 
@@ -70,7 +74,16 @@ impl Auth {
             expected: Some(hash(token)),
             sessions: Arc::new(Mutex::new(HashMap::new())),
             failures: Arc::new(Mutex::new(HashMap::new())),
+            trust_proxy: false,
         }
+    }
+
+    /// Mark the session cookie `Secure` when a trusted reverse proxy reports
+    /// HTTPS. Enable this only when the server is reachable exclusively
+    /// through that proxy.
+    pub fn with_trusted_proxy(mut self, trust_proxy: bool) -> Self {
+        self.trust_proxy = trust_proxy;
+        self
     }
 
     pub fn required(&self) -> bool {
@@ -212,6 +225,25 @@ fn request_ip(request: &Request) -> IpAddr {
         .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST))
 }
 
+/// True when a trusted reverse proxy reports that the browser used HTTPS.
+/// The header is ignored unless `--trust-proxy` is set, so a client that
+/// reaches the server directly cannot spoof the proxy's protocol.
+fn forwarded_https(headers: &HeaderMap, trust_proxy: bool) -> bool {
+    if !trust_proxy {
+        return false;
+    }
+    headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .is_some_and(|proto| proto.trim().eq_ignore_ascii_case("https"))
+}
+
+fn session_cookie(value: &str, max_age: u64, secure: bool) -> String {
+    let secure = if secure { "; Secure" } else { "" };
+    format!("{COOKIE_NAME}={value}; HttpOnly; SameSite=Strict; Path=/; Max-Age={max_age}{secure}")
+}
+
 #[derive(Serialize)]
 pub(crate) struct AuthStatus {
     required: bool,
@@ -235,6 +267,7 @@ pub struct LoginRequest {
 pub async fn login(
     Extension(auth): Extension<Auth>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(request): Json<LoginRequest>,
 ) -> Response {
     if !auth.required() {
@@ -254,19 +287,16 @@ pub async fn login(
     let Some(value) = auth.new_session() else {
         return Json(serde_json::json!({ "ok": true })).into_response();
     };
-    let cookie = format!(
-        "{COOKIE_NAME}={value}; HttpOnly; SameSite=Strict; Path=/; Max-Age={COOKIE_MAX_AGE}"
-    );
-    json_with_cookie(&cookie)
+    let secure = forwarded_https(&headers, auth.trust_proxy);
+    json_with_cookie(&session_cookie(&value, COOKIE_MAX_AGE, secure))
 }
 
 pub async fn logout(Extension(auth): Extension<Auth>, headers: HeaderMap) -> Response {
     if let Some(value) = cookie(&headers, COOKIE_NAME) {
         auth.revoke_session(value);
     }
-    json_with_cookie(&format!(
-        "{COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"
-    ))
+    let secure = forwarded_https(&headers, auth.trust_proxy);
+    json_with_cookie(&session_cookie("", 0, secure))
 }
 
 /// A JSON success response that clears or sets the session cookie.
@@ -355,5 +385,28 @@ mod tests {
         assert_eq!(auth.failure_delay(ip), SLOW_FAILURE_DELAY);
         auth.clear_failures(ip);
         assert_eq!(auth.failure_delay(ip), FAILURE_DELAY);
+    }
+
+    #[test]
+    fn forwarded_proto_is_only_honored_with_trust_proxy() {
+        let https = headers(&[("x-forwarded-proto", "https".to_string())]);
+        let http = headers(&[("x-forwarded-proto", "http".to_string())]);
+        let list = headers(&[("x-forwarded-proto", "https, http".to_string())]);
+        assert!(!forwarded_https(&https, false));
+        assert!(forwarded_https(&https, true));
+        assert!(!forwarded_https(&http, true));
+        assert!(forwarded_https(&list, true));
+        assert!(!forwarded_https(&HeaderMap::new(), true));
+    }
+
+    #[test]
+    fn session_cookie_sets_secure_only_when_asked() {
+        let insecure = session_cookie("abc", COOKIE_MAX_AGE, false);
+        assert!(insecure.contains("HttpOnly"));
+        assert!(insecure.contains("SameSite=Strict"));
+        assert!(!insecure.contains("; Secure"));
+
+        let secure = session_cookie("abc", COOKIE_MAX_AGE, true);
+        assert!(secure.ends_with("; Secure"));
     }
 }

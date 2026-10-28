@@ -257,6 +257,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn login_cookie_is_secure_only_behind_a_trusted_proxy() {
+        for (trust_proxy, expected) in [(false, false), (true, true)] {
+            let app = app(auth::Auth::from_token("s3cret-token").with_trusted_proxy(trust_proxy));
+            let response = app
+                .oneshot(request(
+                    "POST",
+                    "/api/auth/login",
+                    &[
+                        ("content-type", "application/json"),
+                        ("x-forwarded-proto", "https"),
+                    ],
+                    r#"{"token":"s3cret-token"}"#,
+                ))
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::OK);
+            let set_cookie = response
+                .headers()
+                .get(header::SET_COOKIE)
+                .expect("set-cookie")
+                .to_str()
+                .expect("cookie text");
+            let secure = set_cookie
+                .split(';')
+                .any(|part| part.trim().eq_ignore_ascii_case("secure"));
+            assert_eq!(secure, expected, "set-cookie: {set_cookie}");
+        }
+    }
+
+    #[tokio::test]
     async fn disabled_auth_leaves_api_open() {
         let app = app(auth::Auth::disabled());
         let response = app

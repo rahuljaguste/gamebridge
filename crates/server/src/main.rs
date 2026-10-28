@@ -43,6 +43,12 @@ struct Args {
     #[arg(long)]
     allow_remote: bool,
 
+    /// Trust X-Forwarded-Proto from a reverse proxy. Enable only when the
+    /// server is reachable exclusively through that proxy. Marks the session
+    /// cookie Secure when the proxy reports HTTPS.
+    #[arg(long)]
+    trust_proxy: bool,
+
     /// Require this token for API and WebSocket access. Enables authentication.
     #[arg(long, value_name = "TOKEN", conflicts_with = "auth_token_file")]
     auth_token: Option<String>,
@@ -151,7 +157,8 @@ async fn main() -> Result<()> {
     let auth = match token.as_deref() {
         Some(token) => Auth::from_token(token),
         None => Auth::disabled(),
-    };
+    }
+    .with_trusted_proxy(args.trust_proxy);
     let auth_required = auth.required();
     if auth_required {
         tracing::info!("authentication is enabled");
@@ -172,6 +179,15 @@ async fn main() -> Result<()> {
                 "binding {} exposes an UNAUTHENTICATED Remote Play bridge to the network; \
                  pass --auth-token or --auth-token-file to require a token",
                 args.bind
+            );
+        }
+        if args.trust_proxy {
+            tracing::info!("trusting X-Forwarded-Proto from a reverse proxy");
+        } else {
+            tracing::warn!(
+                "remote mode serves plain HTTP; the auth token, session cookie, and controller \
+                 input are visible to anyone who can observe this network; put an HTTPS reverse \
+                 proxy in front and pass --trust-proxy so the session cookie is marked Secure"
             );
         }
     }
@@ -228,6 +244,13 @@ async fn main() -> Result<()> {
             "disabled"
         }
     );
+    if !args.bind.ip().is_loopback() {
+        if args.trust_proxy {
+            println!("  Proxy: trusted (X-Forwarded-Proto)");
+        } else {
+            println!("  TLS:  none (plain HTTP; use an HTTPS reverse proxy)");
+        }
+    }
     println!("  Press Ctrl+C to stop.");
     println!();
 

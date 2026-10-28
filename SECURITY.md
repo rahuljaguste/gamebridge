@@ -27,6 +27,11 @@ Do not paste any of these into a public issue, and redact them from logs. The
 server does not intentionally log registration keys or the auth token; report
 any code path that does.
 
+Beyond loopback, the bridge serves plain HTTP unless you put an HTTPS reverse
+proxy in front. Pass `--trust-proxy` in that setup so the session cookie is
+marked `Secure`; without TLS, the auth token and controller input are visible
+to anyone who can observe the network.
+
 ## Scope
 
 In scope: the Rust bridge, protocol parsing, authentication and origin checks,

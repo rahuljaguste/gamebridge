@@ -8,9 +8,13 @@ semantic versioning; it is a Chiaki derivative and remains AGPL-3.0-only.
 ### Added
 
 - A Beta badge beside the header wordmark.
+- `--trust-proxy` trusts `X-Forwarded-Proto` from a reverse proxy and marks the
+  login cookie `Secure` when the proxy reports HTTPS.
 
 ### Changed
 
+- Remote mode warns at startup when it serves plain HTTP without a trusted
+  proxy, and the startup banner reports the transport posture.
 - Connection status and stream statistics now appear in a top-right overlay
   over the video instead of the player bar and mobile stream menu.
 - The player bar and mobile stream menu use context-grouped icon controls

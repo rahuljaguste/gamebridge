@@ -165,6 +165,7 @@ Options:
 | --- | --- | --- |
 | `--bind <addr>` | `127.0.0.1:8080` | Address for the web UI. Non-loopback addresses are refused unless `--allow-remote` is also given. |
 | `--allow-remote` | off | Permit a non-loopback bind. Without an auth flag this mode is unauthenticated. |
+| `--trust-proxy` | off | Trust `X-Forwarded-Proto` from a reverse proxy. Enable only when the server is reachable exclusively through that proxy; marks the session cookie `Secure` when the proxy reports HTTPS. |
 | `--auth-token <token>` | — | Require this token for API and WebSocket access. |
 | `--auth-token-file <path>` | — | Read the access token from a file (keeps it out of `ps` output). |
 | `--config-dir <dir>` | platform config dir | Override where `hosts.json` is stored. |
@@ -216,13 +217,15 @@ existing sessions.
 
 This is authentication, not transport security. Plain HTTP on Wi-Fi still
 exposes the token and controller input to a passive sniffer; use a trusted
-network or put the bridge behind an HTTPS reverse proxy. One token is shared by
-all clients; there are no per-user accounts.
+network or put the bridge behind an HTTPS reverse proxy, and pass
+`--trust-proxy` so the login cookie is marked `Secure`. One token is shared by
+all clients; there are no per-user accounts. The server warns at startup when
+it serves remote clients over plain HTTP.
 
 A local reverse proxy also gives phones/tablets the secure context needed for
 WebRTC, Gamepad, and motion sensors. For example, keep GameBridge bound to the
-LAN with `--allow-remote` and proxy to it with Caddy so the original `Host` and
-`Origin` are preserved:
+LAN with `--allow-remote --trust-proxy` and proxy to it with Caddy so the
+original `Host` and `Origin` are preserved:
 
 ```caddyfile
 gamebridge.lan {
@@ -230,10 +233,13 @@ gamebridge.lan {
 }
 ```
 
-Use a certificate the device trusts (Caddy's internal CA installed on the
-phone/tablet, `mkcert`, or a public certificate for a real hostname). The
-default port 443 is supported after the guard's HTTPS-default-port fix. There
-is no built-in TLS listener yet.
+`--trust-proxy` honors `X-Forwarded-Proto` (Caddy sends it by default) and marks
+the session cookie `Secure` when the proxy reports HTTPS. Enable it only when
+the server cannot be reached except through the proxy; otherwise a client that
+connects directly can spoof the header. Use a certificate the
+device trusts (Caddy's internal CA installed on the phone/tablet, `mkcert`, or a
+public certificate for a real hostname). The default port 443 is supported after
+the guard's HTTPS-default-port fix. There is no built-in TLS listener yet.
 
 ## Using the UI
 
