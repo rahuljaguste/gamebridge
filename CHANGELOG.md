@@ -13,6 +13,11 @@ semantic versioning; it is a Chiaki derivative and remains AGPL-3.0-only.
 - A Quick start section at the top of the README leads with the demo and then
   walks through console pairing.
 
+### Changed
+
+- Add the project copyright notice and a `NOTICE` file to the repository and
+  release archives.
+
 ## [0.8.6] - 2026-10-23
 
 ### Added

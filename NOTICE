@@ -1,0 +1,10 @@
+GameBridge
+Copyright (C) 2026 Rahul Pramod Jaguste and contributors
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License, version 3 only, as
+published by the Free Software Foundation. See COPYING.
+
+GameBridge is a derivative work of Chiaki v2.2.0 (AGPL-3.0-only-OpenSSL).
+See THIRD_PARTY_NOTICES.md for Chiaki, AMD FidelityFX Super Resolution, and
+other attributions.

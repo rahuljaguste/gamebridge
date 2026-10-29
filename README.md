@@ -613,6 +613,8 @@ and is not affiliated with Sony, Microsoft, Nintendo, or Valve.
 
 ## Licensing
 
+GameBridge is Copyright (C) 2026 Rahul Pramod Jaguste and contributors.
+
 This program is free software: you can redistribute it and/or modify it under
 the terms of the GNU Affero General Public License, version 3 only, as
 published by the Free Software Foundation. See [COPYING](COPYING).
