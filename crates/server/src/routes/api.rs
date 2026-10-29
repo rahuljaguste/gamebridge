@@ -526,7 +526,11 @@ pub async fn start_session(
     let id = Uuid::new_v4();
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
 
-    let mut session = match Session::start(info, SessionOptions::default()) {
+    let options = SessionOptions {
+        video_queue: state.video_queue,
+        ..SessionOptions::default()
+    };
+    let mut session = match Session::start(info, options) {
         Ok(session) => session,
         Err(e) => {
             let _ = peers.peer.close().await;

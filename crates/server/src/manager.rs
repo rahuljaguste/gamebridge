@@ -149,6 +149,8 @@ pub async fn run(
     let stats_quality = quality.clone();
     let stats_started = stream_started.clone();
     let stats_task = tokio::spawn(async move {
+        let video_queue_capacity = stats_state.video_queue;
+        let mut queue_peak_max = 0usize;
         let mut ticker = tokio::time::interval(Duration::from_secs(1));
         loop {
             tokio::select! {
@@ -171,15 +173,26 @@ pub async fn run(
                         quality.loss_pct()
                     };
                     let latency_ms = *stats_shared.latency_ms.lock().unwrap_or_else(|error| error.into_inner());
+                    let video_queue_depth = stats_shared
+                        .video_queue_depth
+                        .load(Ordering::Relaxed);
+                    let video_queue_peak = stats_shared
+                        .video_queue_peak
+                        .swap(0, Ordering::Relaxed);
+                    queue_peak_max = queue_peak_max.max(video_queue_peak);
                     stats_state.publish(ServerEvent::Stats {
                         received,
                         lost,
                         loss_pct,
                         latency_ms,
+                        video_queue_depth,
+                        video_queue_peak,
+                        video_queue_capacity,
                     });
                 }
             }
         }
+        tracing::info!("video queue peak: {queue_peak_max}/{video_queue_capacity} frames");
     });
 
     let outcome = tokio::select! {

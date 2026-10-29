@@ -72,15 +72,18 @@ firmware, artwork, or keys extracted from Sony software by this project. See
   restart and WebSocket reconnection when the link drops
 - Senkusha pre-stream probing on UDP 9297 for MTU and RTT; the measured RTT is
   shown in the stream stats and the MTU sizes the launch spec and fragmentation
-- Gamepad, keyboard/mouse, and touch input; persistent rumble state; latency
-  and packet stats. Latency is the round-trip time to the console: measured by
-  Senkusha at stream start, then updated from the console's own
-  connection-quality reports.
+- Gamepad, keyboard/mouse, and touch input; persistent rumble state; latency,
+  packet, and video-queue stats. Latency is the round-trip time to the
+  console: measured by Senkusha at stream start, then updated from the
+  console's own connection-quality reports.
+- Optional experimental DualSense feedback (**Settings → Input**): rumble plus
+  a `trigger-rumble` approximation of adaptive-trigger effects. Full effect
+  modes would need WebHID; see [Limitations](#limitations).
 - Phone/tablet play with an auto-shown on-screen controller (dual sticks,
   D-pad, face buttons, shoulders/triggers, and menu buttons) and optional
   device gyro/accelerometer motion with a Recenter control.
-- Screenshot and local pause/resume in the player bar. Pausing freezes this
-  view only; the console keeps running.
+- Screenshot, local pause/resume, keyframe resync, and console Rest Mode in the
+  player bar. Pausing freezes this view only; the console keeps running.
 - After a console standby disconnect, **Wake and resume** wakes it from Rest
   Mode and starts a new session without leaving the player view.
 - Volume and mute controls in the player bar, saved per browser; **M** toggles
@@ -90,7 +93,8 @@ firmware, artwork, or keys extracted from Sony software by this project. See
   under **Settings → Input**.
 - Cross-session adaptive bitrate: sustained packet loss steps the next
   session's starting bitrate down; clean sessions step it back up.
-- Demo mode that streams a local H.264 file with no console attached
+- Demo mode that streams a built-in or local H.264 clip with no console
+  attached
 
 Deferred/unsupported (see [Limitations](#limitations)): PSN cloud streaming,
 DualSense haptics and full adaptive-trigger modes, keyboard text entry,
@@ -123,6 +127,12 @@ WebRTC path.
 Phones/tablets need a secure context; see
 [LAN access and authentication](#lan-access-and-authentication). Known
 limitations are under [Limitations](#limitations).
+
+## Screenshots
+
+| Home screen | Demo stream |
+| --- | --- |
+| ![GameBridge home screen with the Add console tile and Start demo stream](docs/screenshot-home.png) | ![GameBridge streaming the built-in demo test pattern with the player HUD](docs/screenshot-demo.png) |
 
 ## Requirements
 
@@ -176,6 +186,7 @@ Options:
 | `--config-dir <dir>` | platform config dir | Override where `hosts.json` is stored. |
 | `--demo` | off | Stream a built-in test pattern with no console and no demo file. |
 | `--demo-file <file>` | — | Enable the demo endpoint with a local Annex-B H.264 stream. |
+| `--video-queue <frames>` | `16` | Frames buffered between ingest and the WebRTC writer (2–64). Higher absorbs writer stalls but adds up to frames/fps of display latency. |
 | `--log-file <path>` | `<config dir>/server.log` | Also write logs to this file (stderr always gets them too). |
 
 The configuration directory is `$XDG_CONFIG_HOME/gamebridge` (or the
@@ -192,9 +203,10 @@ untouched.
 
 **At a glance:** one Remote Play session per console; a started session stops
 if the browser does not connect within 30 seconds; H.265/HDR depend on console
-and browser support, and HDR plus phone motion are experimental; sustained Wi-Fi
-loss causes frame drops and keyframe waits; wake from Rest Mode depends on the
-stored registration key; PS5 support is protocol 1.0 only.
+and browser support, and HDR plus phone motion are experimental; Wi-Fi loss and
+local video backpressure both cause frame drops and keyframe waits; wake from
+Rest Mode depends on the stored registration key; PS5 support is protocol 1.0
+only.
 
 - **H.265 depends on the console and the browser.** PS4 sessions are H.264
   only. PS5 can deliver H.265, but the browser must expose hardware HEVC over
@@ -212,9 +224,13 @@ stored registration key; PS5 support is protocol 1.0 only.
 - **No PSN cloud streaming.** Local-console Remote Play is supported; PSN cloud
   sessions are not. Senkusha probing itself is implemented and runs before each
   local stream.
-- **DualSense features are not forwarded.** Rumble is supported; haptics,
-  adaptive triggers, touchpad gestures beyond basic touches, and the DualSense
-  microphone are not.
+- **DualSense support is experimental and partial.** Rumble is supported. With
+  **Settings → Input → DualSense feedback** enabled, the console sends
+  trigger-effect data and GameBridge maps it to Chrome's `trigger-rumble`
+  approximation; full adaptive-trigger modes would need WebHID. Haptics,
+  touchpad gestures beyond basic touches, and the DualSense microphone are not
+  forwarded. The experimental mode may make the console's streaming server
+  unstable after repeated sessions.
 - **Keyboard text entry** from the console is consumed but not surfaced in the
   browser.
 - **Phones/tablets need a secure context for full support.** Plain
@@ -249,6 +265,14 @@ stored registration key; PS5 support is protocol 1.0 only.
 - Video is forwarded as complete access units; a lost slice or a frame that
   fails FEC is dropped and the client requests a new IDR. Expect a short
   recovery hitch under heavy packet loss.
+- **Framerate drops have two distinct causes.** Packet loss makes FEC fail and
+  forces keyframe waits. Local backpressure — HDR/H.265 decode, a backgrounded
+  tab, or a busy CPU — overflows the video queue and drops frames even
+  when the network is clean. The log distinguishes them: `FEC failed` is
+  network, `video queue full` is backpressure. A queue overflow also requests a
+  new IDR, so one hiccup can extend itself. The queue is tunable with
+  `--video-queue <frames>` (default 16): lower it for less display latency,
+  raise it for more stall tolerance. The HUD shows its depth and peak.
 - Audio is Opus as sent by the console; no transcoding or volume normalization.
 - The console may refuse a stream while another Remote Play client (including
   the official app) is connected.
@@ -316,7 +340,8 @@ the guard's HTTPS-default-port fix. There is no built-in TLS listener yet.
 
 The home screen shows your consoles as tiles. **Add console** is the first tile;
 paired consoles follow, then consoles discovered on your network. Choose a
-paired tile to play, or choose a **Nearby** tile to pair that console. The gear
+paired tile to play, or choose a **Nearby** tile to pair that console. Each
+paired tile has a **⋯** menu with **Wake** and **Remove**. The gear
 button in the top-right opens **Settings** in a glass panel that slides in from
 the right; the lock button beside it appears when authentication is enabled.
 The refresh button at the right of the **Your consoles** heading rescans the
@@ -324,14 +349,29 @@ network. Settings has three tabs: **Stream**, **Picture**, and **Input**.
 
 **Add console** also opens as a non-modal glass panel from the right. On first
 load, if no paired or nearby consoles are found, it opens automatically.
-Console type is shown as a radio group, and **?** buttons beside the address
-and PIN fields explain where to find each value. Context messages and session
-notices appear as toasts in the bottom-right.
+Console type is shown as a radio group, the **Name** field is optional, and
+**?** buttons beside the address and PIN fields explain where to find each
+value. Context messages and session notices appear as toasts in the
+bottom-right.
 
 While streaming, the video fills the window. On desktop, move the mouse or tap
-the video to show the floating bar with **Settings**, **Fullscreen**, and
-**Stop**; the bar auto-hides after a few seconds. Stop returns to the home
-screen.
+the video to show the floating bar: mute/volume, pause, screenshot, resync,
+fullscreen, settings, rest mode, and stop. The bar auto-hides after a few
+seconds. **Resync** asks the console for a fresh keyframe if the picture
+stalls; **Rest mode** puts the console to sleep and ends the stream; **Stop**
+returns to the home screen. On touch-capable devices the bar also toggles the
+on-screen controller.
+
+### Keyboard and mouse
+
+**Settings → Input → Keyboard profile** lists every action and lets you remap
+or clear it. Defaults include Space (Cross), J/K/L (Moon/Box/Pyramid), Q/E
+(L1/R1), Z/C (L2/R2), WASD (left stick), Enter (Options), Backspace (Share),
+Tab (Touchpad), and **P (PS/Home)**. P sends the console's PS/Home button — the
+same one you use to leave a game — without a controller. With pointer lock the
+mouse drives the right stick; left click is R2 and right click is L2. Bindings
+only act while a stream is live and never while a text field or dialog has
+focus.
 
 ### Phones and tablets
 
@@ -455,7 +495,8 @@ gamebridge --demo-file demo.h264
   a suitable bitrate. Resolution and FPS are encoded on the console and are
   requested under **Settings → Stream**. Keyboard bindings and profile
   management are under **Settings → Input**; each key can be rebound, cleared,
-  or reset, and profiles are stored in this browser.
+  or reset, and profiles can be created, selected, reset, and deleted. They are
+  stored in this browser.
 
 ## Configuration and privacy
 
@@ -549,6 +590,14 @@ that exercises session → ctrl → Takion → encryption → launch spec → st
 - **Black video / no frames**: check the log for `detected missing/corrupt
   frames` or FEC failures. The bridge requests an IDR after a gap; if the
   console does not send one, stop and restart the stream.
+- **Picture stutters or the framerate drops**: check the log. Repeated
+  `video queue full` means the browser is not draining the stream fast enough:
+  lower the bitrate, switch to H.264, keep the tab visible, and close CPU-heavy
+  apps. Repeated `FEC failed` or `got an old frame packet` means network
+  loss/jitter: prefer wired Ethernet or a stronger Wi-Fi link. The in-stream
+  HUD shows `queue depth/capacity`; a depth that stays high, or a peak near the
+  capacity, confirms backpressure. Lower `--video-queue` for less display
+  latency.
 - **No audio in Safari**: Safari requires the page to be interacted with before
   starting audio; click the page once, then start the stream.
 - **PS button opens the macOS Games app**: macOS reserves the controller

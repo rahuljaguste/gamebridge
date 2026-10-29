@@ -3,6 +3,28 @@
 All notable changes to GameBridge are documented here. The project follows
 semantic versioning; it is a Chiaki derivative and remains AGPL-3.0-only.
 
+## [Unreleased]
+
+### Added
+
+- Add a PS/Home keyboard binding (default **P**) so keyboard and mouse players
+  can leave a running game without a controller.
+- `--video-queue <frames>` (default 16) tunes the ingest buffer between low
+  latency and stall tolerance. The HUD now shows queue depth and peak, and each
+  session logs its peak queue depth.
+
+### Changed
+
+- Document the full desktop player bar, console tile actions, keyboard profile
+  management, and the experimental DualSense feedback toggle. Correct the
+  DualSense limitation: trigger effects are approximated in experimental mode,
+  while haptics remain unsupported.
+- Document the two framerate-drop modes — Wi-Fi/FEC loss and local video-queue
+  backpressure — with log signatures and troubleshooting guidance.
+- Raise the video ingest queue from 8 to 16 frames so a slow WebRTC writer
+  (HDR/HEVC keyframes, a busy browser) is less likely to overflow it and drop
+  frames. IDR requests stay coalesced to one per second.
+
 ## [0.8.7] - 2026-10-28
 
 ### Added

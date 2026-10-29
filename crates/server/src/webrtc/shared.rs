@@ -2,7 +2,7 @@
 //! Shared media state between the event forwarder and the track bridges.
 
 use std::sync::Mutex;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 use bytes::Bytes;
 
@@ -17,6 +17,10 @@ pub struct MediaShared {
     /// Latest console round-trip time, surfaced in the periodic stats event.
     pub latency_ms: Mutex<Option<f64>>,
     pub first_idr_sent: AtomicBool,
+    /// Frames waiting for the WebRTC video writer, sampled by the bridge.
+    pub video_queue_depth: AtomicUsize,
+    /// Highest depth since the stats task last sampled.
+    pub video_queue_peak: AtomicUsize,
 }
 
 impl MediaShared {

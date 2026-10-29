@@ -88,6 +88,11 @@ pub enum ServerEvent {
         loss_pct: Option<f64>,
         /// Round-trip time to the console in milliseconds, when measured.
         latency_ms: Option<f64>,
+        /// Frames waiting for the WebRTC video writer.
+        video_queue_depth: usize,
+        /// Highest depth since the previous stats event.
+        video_queue_peak: usize,
+        video_queue_capacity: usize,
     },
     PeerState {
         state: String,
@@ -130,6 +135,8 @@ pub struct AppState {
     /// uses this to detect a closed tab.
     pub ws_clients: Arc<AtomicUsize>,
     pub demo: Option<DemoSource>,
+    /// Frames buffered between ingest and the WebRTC writer.
+    pub video_queue: usize,
     /// Cancelled once when the HTTP server begins a graceful shutdown, so
     /// upgraded WebSocket handlers can close their sockets instead of relying
     /// on the runtime being torn down underneath them.
@@ -139,7 +146,7 @@ pub struct AppState {
 const REPLAY_CAPACITY: usize = 32;
 
 impl AppState {
-    pub fn new(config: ConfigStore, demo: Option<DemoSource>) -> Arc<Self> {
+    pub fn new(config: ConfigStore, demo: Option<DemoSource>, video_queue: usize) -> Arc<Self> {
         let (events, _) = broadcast::channel(256);
         Arc::new(Self {
             config: Arc::new(config),
@@ -150,6 +157,7 @@ impl AppState {
             replay: std::sync::Mutex::new(VecDeque::new()),
             ws_clients: Arc::new(AtomicUsize::new(0)),
             demo,
+            video_queue,
             shutdown: CancellationToken::new(),
         })
     }
@@ -250,7 +258,7 @@ mod tests {
     fn test_state() -> Arc<AppState> {
         let dir = std::env::temp_dir().join(format!("gamebridge-test-{}", Uuid::new_v4()));
         let store = ConfigStore::load(Some(dir)).expect("load empty config");
-        AppState::new(store, None)
+        AppState::new(store, None, 16)
     }
 
     #[test]
@@ -293,6 +301,9 @@ mod tests {
             lost: 0,
             loss_pct: None,
             latency_ms: None,
+            video_queue_depth: 0,
+            video_queue_peak: 0,
+            video_queue_capacity: 16,
         });
         let (_, replay) = state.subscribe_with_replay();
         assert!(replay.is_empty());

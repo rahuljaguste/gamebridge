@@ -34,6 +34,13 @@ pub async fn run(
     let mut last_keyframe_request: Option<Instant> = None;
 
     loop {
+        // Publish the backlog before draining. The stats task samples this
+        // once per second and surfaces it in the HUD; the peak catches a
+        // stall that fills the queue while the writer is blocked.
+        let depth = frames.len();
+        shared.video_queue_depth.store(depth, Ordering::Relaxed);
+        shared.video_queue_peak.fetch_max(depth, Ordering::Relaxed);
+
         let frame = tokio::select! {
             _ = cancel.cancelled() => break,
             frame = frames.recv() => {

@@ -70,6 +70,12 @@ struct Args {
     #[arg(long)]
     demo_file: Option<PathBuf>,
 
+    /// Frames buffered between ingest and the WebRTC writer (2-64). Higher
+    /// absorbs short writer stalls but adds up to frames/fps of display
+    /// latency.
+    #[arg(long, default_value_t = 16, value_name = "FRAMES")]
+    video_queue: usize,
+
     /// Write logs to this file as well as stderr (default: server.log in the
     /// configuration directory).
     #[arg(long)]
@@ -131,6 +137,9 @@ fn init_tracing(log_path: &Path) {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    if !(2..=64).contains(&args.video_queue) {
+        anyhow::bail!("--video-queue must be between 2 and 64 frames");
+    }
     let store = ConfigStore::load(args.config_dir.clone())?;
     let log_path = args
         .log_file
@@ -201,7 +210,7 @@ async fn main() -> Result<()> {
     } else {
         args.demo_file.clone().map(DemoSource::File)
     };
-    let state = AppState::new(store, demo);
+    let state = AppState::new(store, demo, args.video_queue);
     let shutdown_state = state.clone();
     let app = routes::router(state, args.bind, args.allow_remote, auth);
 

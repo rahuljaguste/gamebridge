@@ -368,7 +368,12 @@ impl Default for SessionOptions {
         Self {
             verify_ecdh: true,
             senkusha: true,
-            video_queue: 8,
+            // 16 frames is roughly 266 ms at 60 fps. Short WebRTC writer
+            // stalls (large HDR/HEVC keyframes, a busy browser) otherwise
+            // overflow the queue and drop frames. Steady-state latency is
+            // unchanged because the queue stays nearly empty when the writer
+            // keeps up.
+            video_queue: 16,
             audio_queue: 256,
         }
     }

@@ -33,6 +33,7 @@ const statsEl = $("stats");
 let consoleLatencyMs = null;
 let packetLossPct = null;
 let packetCount = { received: 0, lost: 0 };
+let videoQueue = { depth: 0, peak: 0, capacity: 0 };
 
 function renderStats() {
   const parts = [];
@@ -49,6 +50,11 @@ function renderStats() {
     parts.push(`${packetLossPct.toFixed(1)}% loss`);
   }
   parts.push(`${packetCount.received} pkts`, `${packetCount.lost} lost`);
+  if (videoQueue.capacity > 0) {
+    let queue = `queue ${videoQueue.depth}/${videoQueue.capacity}`;
+    if (videoQueue.peak > videoQueue.depth) queue += ` peak ${videoQueue.peak}`;
+    parts.push(queue);
+  }
   statsEl.textContent = parts.join(" · ");
 }
 
@@ -2438,6 +2444,11 @@ function handleServerEvent(event) {
       packetCount = { received: event.received, lost: event.lost };
       packetLossPct = Number.isFinite(event.loss_pct) ? event.loss_pct : null;
       consoleLatencyMs = Number.isFinite(event.latency_ms) ? event.latency_ms : null;
+      videoQueue = {
+        depth: Number.isFinite(event.video_queue_depth) ? event.video_queue_depth : 0,
+        peak: Number.isFinite(event.video_queue_peak) ? event.video_queue_peak : 0,
+        capacity: Number.isFinite(event.video_queue_capacity) ? event.video_queue_capacity : 0,
+      };
       renderStats();
       break;
     case "notice":
@@ -2620,6 +2631,7 @@ async function cleanupSession(resetUi) {
   consoleLatencyMs = null;
   packetLossPct = null;
   packetCount = { received: 0, lost: 0 };
+  videoQueue = { depth: 0, peak: 0, capacity: 0 };
   state.activeBitrate = null;
   stopSharpening();
   video.srcObject = null;
@@ -2655,6 +2667,7 @@ const KEYBOARD_ACTIONS = [
   { id: "options", label: "Options", bit: B.OPTIONS, defaultCode: "Enter" },
   { id: "share", label: "Share", bit: B.SHARE, defaultCode: "Backspace" },
   { id: "touchpad", label: "Touchpad", bit: B.TOUCHPAD, defaultCode: "Tab" },
+  { id: "ps", label: "PS", bit: B.PS, defaultCode: "KeyP" },
   { id: "l2", label: "L2 trigger", trigger: "l2", defaultCode: "KeyZ" },
   { id: "r2", label: "R2 trigger", trigger: "r2", defaultCode: "KeyC" },
   { id: "stick_left", label: "Left stick left", axis: "lx", value: -32767, defaultCode: "KeyA" },

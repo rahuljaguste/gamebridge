@@ -118,7 +118,7 @@ mod tests {
     fn app(auth: auth::Auth) -> Router {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = ConfigStore::load(Some(dir.path().to_path_buf())).expect("config store");
-        let state = AppState::new(store, None);
+        let state = AppState::new(store, None, 16);
         router(
             state,
             "127.0.0.1:8080".parse().expect("address"),
