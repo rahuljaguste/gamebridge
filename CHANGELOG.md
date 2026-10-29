@@ -3,7 +3,7 @@
 All notable changes to GameBridge are documented here. The project follows
 semantic versioning; it is a Chiaki derivative and remains AGPL-3.0-only.
 
-## [Unreleased]
+## [0.8.8] - 2026-10-29
 
 ### Added
 
@@ -24,6 +24,7 @@ semantic versioning; it is a Chiaki derivative and remains AGPL-3.0-only.
 - Raise the video ingest queue from 8 to 16 frames so a slow WebRTC writer
   (HDR/HEVC keyframes, a busy browser) is less likely to overflow it and drop
   frames. IDR requests stay coalesced to one per second.
+- Use real gameplay screenshots in the README.
 
 ## [0.8.7] - 2026-10-28
 
