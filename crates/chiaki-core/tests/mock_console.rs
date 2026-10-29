@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! End-to-end pipeline test against a mock console speaking the real wire
 //! protocol (registration is covered by vectors; this exercises session,
 //! ctrl, Takion, crypto, launch spec, media ingest and feedback).

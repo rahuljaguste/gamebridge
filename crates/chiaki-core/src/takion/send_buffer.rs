@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Retransmission buffer for sent Takion control DATA packets.
 
 use std::time::{Duration, Instant};

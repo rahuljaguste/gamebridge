@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Tiny protobuf wire-format helpers for the handful of Takion messages we
 //! need. No code generation or schema files.
 

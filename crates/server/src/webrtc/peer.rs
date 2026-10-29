@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Create the server-side peer connection, video/Opus tracks and offer.
 
 use std::sync::atomic::{AtomicBool, Ordering};

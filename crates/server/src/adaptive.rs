@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Cross-session adaptive bitrate.
 //!
 //! The launch spec fixes the console encoder's bitrate for the whole session;

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Senkusha: pre-stream MTU/RTT probing on UDP 9297.
 //!
 //! Ported from Chiaki's `lib/src/senkusha.c`. Current PS5 firmware expects

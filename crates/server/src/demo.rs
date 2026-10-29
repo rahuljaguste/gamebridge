@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Optional demo mode: stream a local Annex-B H.264 file through the same
 //! WebRTC bridge, without a console. Useful for verifying the browser path.
 

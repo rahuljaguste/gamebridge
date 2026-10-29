@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 
 name: Release
 
@@ -123,7 +124,7 @@ jobs:
           name="gamebridge-${version}-${{ matrix.target }}"
           mkdir -p "dist/${name}"
           cp "target/${{ matrix.target }}/release/gamebridge" "dist/${name}/"
-          cp README.md COPYING NOTICE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.md "dist/${name}/"
+          cp README.md COPYING NOTICE CITATION.cff THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.md "dist/${name}/"
           tar -C dist -czf "dist/${name}.tar.gz" "${name}"
           rm -rf "dist/${name}"
 
@@ -135,7 +136,7 @@ jobs:
           $name = "gamebridge-$version-${{ matrix.target }}"
           New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/gamebridge.exe" "dist/$name/"
-          Copy-Item README.md,COPYING,NOTICE,THIRD_PARTY_NOTICES.md,THIRD_PARTY_LICENSES.md "dist/$name/"
+          Copy-Item README.md,COPYING,NOTICE,CITATION.cff,THIRD_PARTY_NOTICES.md,THIRD_PARTY_LICENSES.md "dist/$name/"
           Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
           Remove-Item -Recurse -Force "dist/$name"
 

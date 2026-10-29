@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Fixed-size reorder queue for Takion DATA chunks (RFC 1982 sequence space).
 
 use crate::takion::{seq32_gt, seq32_lt};

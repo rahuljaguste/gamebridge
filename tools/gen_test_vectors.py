@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 """Extract byte/uint64 constants from one C test function into Rust consts.
 
 Usage: python3 -I tools/gen_test_vectors.py <test.c> <function> <out.rs>
@@ -32,7 +33,11 @@ def main() -> None:
         raise SystemExit("usage: gen_test_vectors.py <test.c> <function> <out.rs>")
     source = open(sys.argv[1], "r", encoding="utf-8", errors="replace").read()
     body = function_body(source, sys.argv[2])
-    out = ["// Generated from the Chiaki v2.2.0 test suite by tools/gen_test_vectors.py."]
+    out = [
+        "// SPDX-License-Identifier: AGPL-3.0-only",
+        "// Copyright (C) 2026 Rahul Pramod Jaguste and contributors",
+        "// Generated from the Chiaki v2.2.0 test suite by tools/gen_test_vectors.py.",
+    ]
     for m in re.finditer(
         r"(?:static\s+)?(?:const\s+)?uint8_t\s+(\w+)\s*\[\]\s*=\s*\{(.*?)\};",
         body,

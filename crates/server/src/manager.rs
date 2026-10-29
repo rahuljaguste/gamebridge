@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Owns a live session and the WebRTC bridges for its lifetime.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

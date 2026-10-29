@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Browser WebSocket: server events in, controller state and commands out.
 
 use std::sync::Arc;

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Unofficial Rust port of the Chiaki v2.2.0 Remote Play protocol core.
 //!
 //! The protocol constants and algorithms are derived from Chiaki by Florian

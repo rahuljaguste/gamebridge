@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Stream connection: Takion handshake, launch spec, media forwarding,
 //! feedback and congestion.
 

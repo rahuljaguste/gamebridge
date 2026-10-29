@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Minimal HTTP/1.1 response parsing. The console sends `HTTP/1.1` responses
 //! with either CRLF or bare LF line endings.
 

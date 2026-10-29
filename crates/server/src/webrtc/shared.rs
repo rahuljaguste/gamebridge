@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Shared media state between the event forwarder and the track bridges.
 
 use std::sync::Mutex;

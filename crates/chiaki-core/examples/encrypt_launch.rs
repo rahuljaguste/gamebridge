@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Reference check for the launch-spec RPCrypt encryption:
 //! `<nonce-hex> <morning-hex> <json> <counter>`.
 

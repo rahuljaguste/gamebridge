@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Decrypt a captured launch spec: `<nonce-b64> <morning-b64> <launch-b64>`.
 
 use chiaki_core::crypto::rpcrypt::RPCrypt;

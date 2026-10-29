@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Takion packet formats and AV packet parsing.
 //!
 //! Layouts and offsets mirror `lib/src/takion.c` exactly.

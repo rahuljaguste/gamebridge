@@ -3,6 +3,17 @@
 All notable changes to GameBridge are documented here. The project follows
 semantic versioning; it is a Chiaki derivative and remains AGPL-3.0-only.
 
+## [0.8.9] - 2026-10-29
+
+### Added
+
+- Add a `CITATION.cff` for academic citations; release archives include it.
+
+### Changed
+
+- Add a per-file copyright header alongside the SPDX license identifier.
+- Note in the README that GameBridge is in beta.
+
 ## [0.8.8] - 2026-10-29
 
 ### Added

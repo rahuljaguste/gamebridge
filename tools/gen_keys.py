@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 """Extract the rpcrypt key tables from Chiaki's rpcrypt.c into a Rust source file.
 
 Run with: python3 -I tools/gen_keys.py <rpcrypt.c> <out.rs>
@@ -38,6 +40,7 @@ def main() -> None:
 
     parts = [
         "// SPDX-License-Identifier: AGPL-3.0-only",
+        "// Copyright (C) 2026 Rahul Pramod Jaguste and contributors",
         "// Generated from Chiaki v2.2.0 lib/src/rpcrypt.c by tools/gen_keys.py.",
         "// Do not edit by hand. The table layout mirrors the reference implementation.",
         "",

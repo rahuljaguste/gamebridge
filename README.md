@@ -7,6 +7,10 @@
 > are trademarks of Sony Interactive Entertainment. Use at your own risk; see
 > [Terms and risk](#terms-and-risk).
 
+> **Beta.** GameBridge is in beta. Expect rough edges and behavior changes
+> between releases; back up `hosts.json` (it contains console registration
+> keys) before upgrading.
+
 GameBridge is an unofficial, browser-based game-streaming bridge, currently
 focused on PlayStation Remote Play. It is a Rust reimplementation of the
 protocol, packaged as a localhost web server that streams a PS4 or PS5 into any
@@ -666,7 +670,8 @@ and is not affiliated with Sony, Microsoft, Nintendo, or Valve.
 
 ## Licensing
 
-GameBridge is Copyright (C) 2026 Rahul Pramod Jaguste and contributors.
+GameBridge is Copyright (C) 2026 Rahul Pramod Jaguste and contributors. For
+academic citation, see [CITATION.cff](CITATION.cff).
 
 This program is free software: you can redistribute it and/or modify it under
 the terms of the GNU Affero General Public License, version 3 only, as

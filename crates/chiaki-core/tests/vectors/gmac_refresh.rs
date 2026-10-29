@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 // Generated from the Chiaki v2.2.0 test suite by tools/gen_test_vectors.py.
 pub const HANDSHAKE_KEY: [u8; 16] = [
     0x70, 0x58, 0x37, 0x50, 0x91, 0xea, 0xd1, 0x37, 0x71, 0x58, 0xec, 0xb3,

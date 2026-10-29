@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Audio packet handling. Each source unit is one Opus packet.
 
 use std::time::Duration;

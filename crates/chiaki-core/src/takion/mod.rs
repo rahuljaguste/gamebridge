@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Takion, the SCTP-like UDP transport used by Remote Play.
 
 pub mod key_state;

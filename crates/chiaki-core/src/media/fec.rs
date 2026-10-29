@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Cauchy Reed-Solomon erasure decoding, matching jerasure's
 //! `cauchy_original_coding_matrix` with w=8 and `jerasure_matrix_decode`.
 

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Forward console Opus packets to the WebRTC audio track.
 
 use std::sync::Arc;

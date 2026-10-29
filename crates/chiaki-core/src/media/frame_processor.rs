@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Video frame assembly with Cauchy FEC, ported from `frameprocessor.c`.
 
 use crate::error::{Error, Result};

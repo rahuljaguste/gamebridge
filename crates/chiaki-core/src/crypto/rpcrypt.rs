@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! RPCrypt: the registration/control channel cipher.
 //!
 //! Bright/ambassador keys are derived from the console nonce and the

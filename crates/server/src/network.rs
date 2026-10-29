@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! LAN address discovery and terminal QR rendering for the startup banner.
 
 use std::net::{IpAddr, SocketAddr};

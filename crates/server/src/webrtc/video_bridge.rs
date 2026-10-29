@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Forward complete video access units (H.264 or H.265) to the WebRTC track.
 //!
 //! The bridge never sends a partial frame. It starts at an IDR/IRAP, detects

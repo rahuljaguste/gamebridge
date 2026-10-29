@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! RFC 1982 sequence-number comparisons and the 32/64-bit Takion key state.
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

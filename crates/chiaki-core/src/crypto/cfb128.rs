@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! AES-128-CFB128 with a 128-bit feedback block, matching OpenSSL's
 //! `EVP_aes_128_cfb128()` (no padding).
 

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! GF(2^8) arithmetic with the primitive polynomial 0x11d, matching
 //! gf-complete/jerasure's `galois_single_multiply` for w=8.
 

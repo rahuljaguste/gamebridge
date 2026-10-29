@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Rahul Pramod Jaguste and contributors
+cff-version: 1.2.0
+message: "If you use GameBridge in academic work, please cite it using the metadata below."
+title: GameBridge
+abstract: "An unofficial, self-hosted browser bridge for PlayStation Remote Play, written in Rust."
+type: software
+authors:
+  - family-names: Jaguste
+    given-names: Rahul Pramod
+    alias: rahuljaguste
+repository-code: "https://github.com/rahuljaguste/gamebridge"
+url: "https://github.com/rahuljaguste/gamebridge"
+license: AGPL-3.0-only
+version: 0.8.9
+date-released: 2026-10-29
+keywords:
+  - PlayStation
+  - Remote Play
+  - game streaming
+  - WebRTC
+  - Rust

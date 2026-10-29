@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! ECDH over secp256k1 with an HMAC-SHA256 signature over the public key.
 //! The shared secret is the raw x-coordinate, matching OpenSSL's
 //! `ECDH_compute_key` used by the reference implementation.

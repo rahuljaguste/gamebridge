@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 // Generated from the Chiaki v2.2.0 FEC test suite by tools/gen_fec_vector.py.
 pub const K: usize = 6;
 pub const M: usize = 1;

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Optional token authentication for the JSON API and the event WebSocket.
 //!
 //! The token is configured on the command line or read from a file. A browser

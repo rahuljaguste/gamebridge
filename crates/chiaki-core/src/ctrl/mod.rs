@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Ctrl channel: the TCP control connection on port 9295.
 
 use std::time::Duration;

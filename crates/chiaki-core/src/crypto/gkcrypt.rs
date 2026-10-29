@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! GKCrypt: the Takion media cipher.
 //!
 //! AES-128-CTR style keystream (ECB encrypting an incrementing IV), plus an

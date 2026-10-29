@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Reject requests that did not originate from this machine's browser UI.
 //!
 //! Listening on loopback is not an origin boundary. Any web page can open a

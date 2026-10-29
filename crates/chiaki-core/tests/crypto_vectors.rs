@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Known-answer tests ported from Chiaki v2.2.0.
 
 use chiaki_core::crypto::ecdh::{CHIAKI_ECDH_SECRET_SIZE, Ecdh};

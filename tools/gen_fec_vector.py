@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 """Extract the first FEC test case from Chiaki's fec_test_cases.inl."""
 import re
 import sys
@@ -20,6 +21,8 @@ def main() -> None:
     erasures = [int(x.strip()) for x in eras.split(",") if x.strip() and int(x.strip()) >= 0]
     b64 = "".join(re.findall(r'"([^"]*)"', strings))
     out = [
+        "// SPDX-License-Identifier: AGPL-3.0-only",
+        "// Copyright (C) 2026 Rahul Pramod Jaguste and contributors",
         "// Generated from the Chiaki v2.2.0 FEC test suite by tools/gen_fec_vector.py.",
         f"pub const K: usize = {k};",
         f"pub const M: usize = {mm};",

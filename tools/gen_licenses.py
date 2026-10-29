@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 """Generate THIRD_PARTY_LICENSES.md from Cargo metadata.
 
 Usage:

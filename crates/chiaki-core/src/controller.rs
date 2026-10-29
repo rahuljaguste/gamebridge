@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Rahul Pramod Jaguste and contributors
 //! Controller state shared by the input path and the feedback sender.
 
 pub const BUTTON_CROSS: u32 = 1 << 0;
