@@ -183,6 +183,9 @@ jobs:
         with:
           files: dist/*
           body: |
+            **Beta.** GameBridge is in beta. Expect rough edges and behavior
+            changes between releases; back up `hosts.json` before upgrading.
+
             Prebuilt GameBridge binaries for this release.
 
             | Platform | Asset |
