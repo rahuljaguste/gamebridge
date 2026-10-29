@@ -3,9 +3,9 @@
 
 name: Release
 
+# Manual releases only. Dispatch on a v* tag ref, for example:
+#   gh workflow run release.yml --ref v0.8.10
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
