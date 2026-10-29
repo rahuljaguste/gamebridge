@@ -17,6 +17,7 @@ use chiaki_core::session::SessionCommand;
 use chiaki_core::target::Codec;
 
 use crate::config::ConfigStore;
+use crate::demo::DemoSource;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ProfileView {
@@ -128,7 +129,7 @@ pub struct AppState {
     /// Browsers currently attached to `/api/session/ws`. The session manager
     /// uses this to detect a closed tab.
     pub ws_clients: Arc<AtomicUsize>,
-    pub demo_file: Option<std::path::PathBuf>,
+    pub demo: Option<DemoSource>,
     /// Cancelled once when the HTTP server begins a graceful shutdown, so
     /// upgraded WebSocket handlers can close their sockets instead of relying
     /// on the runtime being torn down underneath them.
@@ -138,7 +139,7 @@ pub struct AppState {
 const REPLAY_CAPACITY: usize = 32;
 
 impl AppState {
-    pub fn new(config: ConfigStore, demo_file: Option<std::path::PathBuf>) -> Arc<Self> {
+    pub fn new(config: ConfigStore, demo: Option<DemoSource>) -> Arc<Self> {
         let (events, _) = broadcast::channel(256);
         Arc::new(Self {
             config: Arc::new(config),
@@ -148,7 +149,7 @@ impl AppState {
             events,
             replay: std::sync::Mutex::new(VecDeque::new()),
             ws_clients: Arc::new(AtomicUsize::new(0)),
-            demo_file,
+            demo,
             shutdown: CancellationToken::new(),
         })
     }

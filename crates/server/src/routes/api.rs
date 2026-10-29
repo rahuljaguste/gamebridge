@@ -851,7 +851,7 @@ pub async fn status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> 
         host_id,
         uptime_seconds,
         peer_connected,
-        demo: state.demo_file.is_some(),
+        demo: state.demo.is_some(),
         last_error,
     })
 }

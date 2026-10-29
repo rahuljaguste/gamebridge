@@ -12,6 +12,9 @@ focused on PlayStation Remote Play. It is a Rust reimplementation of the
 protocol, packaged as a localhost web server that streams a PS4 or PS5 into any
 browser over WebRTC.
 
+**Works today:** PS4 and PS5 Remote Play on your local network. Xbox, Steam,
+and Nintendo are future plans; see [Roadmap](#roadmap).
+
 Browsers cannot open the raw UDP sockets Remote Play requires, so this project
 bridges the console protocol to the browser:
 
@@ -95,29 +98,31 @@ multi-controller, and microphone input. Remote binds require `--allow-remote`;
 optional token auth is covered under
 [LAN access and authentication](#lan-access-and-authentication).
 
-## Roadmap
+## Quick start
 
-GameBridge currently supports PS4 and PS5. The long-term goal is one
-self-hosted browser bridge for multiple game sources, not a PlayStation-only
-tool.
+**Try it without a console.** The built-in demo needs no console, PSN account,
+or ffmpeg:
 
-- **Now — PlayStation:** PS4/PS5 registration, session negotiation, H.264/H.265
-  (including HDR where supported), Opus audio, FEC, input, auto-wake, and
-  cross-session adaptive bitrate.
-- **Next — Xbox:** investigate Xbox remote/console streaming and add support
-  when the protocol, platform terms, and hardware testing allow. Xbox is not
-  implemented yet.
-- **Planned — Steam/PC:** add a Steam/PC streaming source so the same browser
-  client can play games running on a local PC.
-- **Exploring — Nintendo:** evaluate Nintendo console streaming where feasible;
-  no support is committed.
-- **Platform work:** multi-source console management, per-source capability
-  detection, multi-user/session isolation, TLS/reverse-proxy deployment, and
-  signed installers.
+```sh
+gamebridge --demo
+```
 
-These are directions, not delivery dates. Support depends on protocol access,
-platform terms, hardware testing, and maintainer time. GameBridge is unofficial
-and is not affiliated with Sony, Microsoft, Nintendo, or Valve.
+Open <http://127.0.0.1:8080/> and press **Start demo stream**. A test pattern
+appears and the stats overlay updates live, which verifies the browser and
+WebRTC path.
+
+**Play a console.** PS4 or PS5 Remote Play on the same LAN:
+
+1. Run `gamebridge` and open <http://127.0.0.1:8080/>.
+2. Choose **Add console** and follow
+   [Registering a console](#registering-a-console).
+3. Enter a PSN Account ID only if the console asks for one; it is not needed
+   for every registration.
+4. Press **Play**, and enter the PIN shown on the console if it asks.
+
+Phones/tablets need a secure context; see
+[LAN access and authentication](#lan-access-and-authentication). Known
+limitations are under [Limitations](#limitations).
 
 ## Requirements
 
@@ -169,6 +174,7 @@ Options:
 | `--auth-token <token>` | — | Require this token for API and WebSocket access. |
 | `--auth-token-file <path>` | — | Read the access token from a file (keeps it out of `ps` output). |
 | `--config-dir <dir>` | platform config dir | Override where `hosts.json` is stored. |
+| `--demo` | off | Stream a built-in test pattern with no console and no demo file. |
 | `--demo-file <file>` | — | Enable the demo endpoint with a local Annex-B H.264 stream. |
 | `--log-file <path>` | `<config dir>/server.log` | Also write logs to this file (stderr always gets them too). |
 
@@ -181,6 +187,71 @@ registration keys. On first run, a `hosts.json` from the previous `setu`
 directory is copied into `gamebridge` automatically; if that is absent, the
 older `ps-remoteplay` directory is used. The old directories are left
 untouched.
+
+## Limitations
+
+**At a glance:** one Remote Play session per console; a started session stops
+if the browser does not connect within 30 seconds; H.265/HDR depend on console
+and browser support, and HDR plus phone motion are experimental; sustained Wi-Fi
+loss causes frame drops and keyframe waits; wake from Rest Mode depends on the
+stored registration key; PS5 support is protocol 1.0 only.
+
+- **H.265 depends on the console and the browser.** PS4 sessions are H.264
+  only. PS5 can deliver H.265, but the browser must expose hardware HEVC over
+  WebRTC (Chrome 136+ or Safari 18+; Firefox and current Edge do not). HDR
+  also requires Main10 hardware decode and an HDR display. If the browser's
+  answer does not accept the offered codec, the start fails with a clear error
+  instead of running a stream that never displays.
+- **Adaptive bitrate cannot retarget a live stream.** The launch spec fixes
+  the console encoder's bitrate for the whole session, and the protocol has no
+  mid-session command to change it. GameBridge adapts the next session's starting
+  bitrate from measured loss. It does not drop or re-encode frames to fake a
+  lower live rate.
+- **PS5 support is protocol 1.0 only**, matching Chiaki v2.2.0. Newer console
+  firmware may change or reject the handshake.
+- **No PSN cloud streaming.** Local-console Remote Play is supported; PSN cloud
+  sessions are not. Senkusha probing itself is implemented and runs before each
+  local stream.
+- **DualSense features are not forwarded.** Rumble is supported; haptics,
+  adaptive triggers, touchpad gestures beyond basic touches, and the DualSense
+  microphone are not.
+- **Keyboard text entry** from the console is consumed but not surfaced in the
+  browser.
+- **Phones/tablets need a secure context for full support.** Plain
+  `http://` on a LAN IP can block WebRTC, the Gamepad API, and motion sensors in
+  mobile browsers. Use `localhost` (Android port forwarding), or an HTTPS
+  reverse proxy with a certificate trusted by the device. Built-in TLS is not
+  included yet.
+- **Phone motion is experimental.** Gyro/accelerometer axis signs depend on the
+  device and grip. Recenter corrects the current heading but not axis mapping;
+  verify on your hardware and adjust the single sign constant in
+  `motion-math.js` if needed.
+- **iOS fullscreen limitation.** iPhone Safari does not support Element
+  Fullscreen, so the Fullscreen button may be unavailable there; use landscape
+  or Add to Home Screen. Elsewhere the whole page enters fullscreen, keeping
+  Settings, PIN, authentication, and stream dialogs visible. Only Stop or an
+  explicit Exit fullscreen action leaves fullscreen.
+- **One active session** at a time and **localhost only** by default. Remote
+  binds require `--allow-remote`, and should use `--auth-token` or
+  `--auth-token-file` on any network with devices you do not control. There is
+  one shared token, not per-user accounts. A started session waits 30 seconds
+  for the browser's WebRTC peer and stops itself if it never connects (for
+  example, if the tab died before answering).
+- Release builds unwind panics. The session-manager task is supervised: a
+  panic is logged, the active slot is cleared, and the browser receives a
+  session-ended event instead of the process wedging or exiting. Run it under a
+  process supervisor for unattended use; `SIGTERM` shuts down cleanly and
+  closes upgraded WebSockets.
+- The `/api/psn/*` account-ID helper endpoints use Sony's legacy Remote Play
+  OAuth client and may stop working if Sony changes those endpoints, just like
+  Chiaki's helper. **Get a code** and redirect-code exchange use them; the PSN
+  password is never sent to GameBridge.
+- Video is forwarded as complete access units; a lost slice or a frame that
+  fails FEC is dropped and the client requests a new IDR. Expect a short
+  recovery hitch under heavy packet loss.
+- Audio is Opus as sent by the console; no transcoding or volume normalization.
+- The console may refuse a stream while another Remote Play client (including
+  the official app) is connected.
 
 ## LAN access and authentication
 
@@ -321,21 +392,21 @@ cannot be reused or saved. Enter it in the in-page modal. (Its wording says
 
 ## Demo mode
 
-To verify the browser/WebRTC path without a console:
+`gamebridge --demo` streams a built-in H.264 test pattern through the same
+WebRTC bridge, with no console attached. Open the UI and press **Start demo
+stream** (or `POST /api/demo/start`). The clip loops until you stop it; stats
+update live.
+
+To use your own clip, any Annex-B H.264 elementary stream works. The bridge
+splits access units on AUD NALs, so make sure ffmpeg emits them:
 
 ```sh
-# Any Annex-B H.264 elementary stream works. The bridge splits access units on
-# AUD NALs, so make sure ffmpeg emits them.
 ffmpeg -f lavfi -i testsrc=size=1280x720:rate=30 -t 20 \
        -c:v libx264 -profile:v baseline -pix_fmt yuv420p \
        -x264-params aud=1 -f h264 demo.h264
 
-cargo run -p gamebridge-server -- --demo-file demo.h264
+gamebridge --demo-file demo.h264
 ```
-
-Open the UI and press **Start demo stream** on the home screen (or
-`POST /api/demo/start`). The browser should show the test pattern with no
-console present; stats update live.
 
 ## Video quality
 
@@ -469,65 +540,6 @@ refresh, ECDH, FEC, and a captured AV packet, plus an end-to-end mock console
 that exercises session → ctrl → Takion → encryption → launch spec → stream info
 → video/audio → clean stop.
 
-## Limitations
-
-- **H.265 depends on the console and the browser.** PS4 sessions are H.264
-  only. PS5 can deliver H.265, but the browser must expose hardware HEVC over
-  WebRTC (Chrome 136+ or Safari 18+; Firefox and current Edge do not). HDR
-  also requires Main10 hardware decode and an HDR display. If the browser's
-  answer does not accept the offered codec, the start fails with a clear error
-  instead of running a stream that never displays.
-- **Adaptive bitrate cannot retarget a live stream.** The launch spec fixes
-  the console encoder's bitrate for the whole session, and the protocol has no
-  mid-session command to change it. GameBridge adapts the next session's starting
-  bitrate from measured loss. It does not drop or re-encode frames to fake a
-  lower live rate.
-- **PS5 support is protocol 1.0 only**, matching Chiaki v2.2.0. Newer console
-  firmware may change or reject the handshake.
-- **No PSN cloud streaming.** Local-console Remote Play is supported; PSN cloud
-  sessions are not. Senkusha probing itself is implemented and runs before each
-  local stream.
-- **DualSense features are not forwarded.** Rumble is supported; haptics,
-  adaptive triggers, touchpad gestures beyond basic touches, and the DualSense
-  microphone are not.
-- **Keyboard text entry** from the console is consumed but not surfaced in the
-  browser.
-- **Phones/tablets need a secure context for full support.** Plain
-  `http://` on a LAN IP can block WebRTC, the Gamepad API, and motion sensors in
-  mobile browsers. Use `localhost` (Android port forwarding), or an HTTPS
-  reverse proxy with a certificate trusted by the device. Built-in TLS is not
-  included yet.
-- **Phone motion is experimental.** Gyro/accelerometer axis signs depend on the
-  device and grip. Recenter corrects the current heading but not axis mapping;
-  verify on your hardware and adjust the single sign constant in
-  `motion-math.js` if needed.
-- **iOS fullscreen limitation.** iPhone Safari does not support Element
-  Fullscreen, so the Fullscreen button may be unavailable there; use landscape
-  or Add to Home Screen. Elsewhere the whole page enters fullscreen, keeping
-  Settings, PIN, authentication, and stream dialogs visible. Only Stop or an
-  explicit Exit fullscreen action leaves fullscreen.
-- **One active session** at a time and **localhost only** by default. Remote
-  binds require `--allow-remote`, and should use `--auth-token` or
-  `--auth-token-file` on any network with devices you do not control. There is
-  one shared token, not per-user accounts. A started session waits 30 seconds
-  for the browser's WebRTC peer and stops itself if it never connects (for
-  example, if the tab died before answering).
-- Release builds unwind panics. The session-manager task is supervised: a
-  panic is logged, the active slot is cleared, and the browser receives a
-  session-ended event instead of the process wedging or exiting. Run it under a
-  process supervisor for unattended use; `SIGTERM` shuts down cleanly and
-  closes upgraded WebSockets.
-- The `/api/psn/*` account-ID helper endpoints use Sony's legacy Remote Play
-  OAuth client and may stop working if Sony changes those endpoints, just like
-  Chiaki's helper. **Get a code** and redirect-code exchange use them; the PSN
-  password is never sent to GameBridge.
-- Video is forwarded as complete access units; a lost slice or a frame that
-  fails FEC is dropped and the client requests a new IDR. Expect a short
-  recovery hitch under heavy packet loss.
-- Audio is Opus as sent by the console; no transcoding or volume normalization.
-- The console may refuse a stream while another Remote Play client (including
-  the official app) is connected.
-
 ## Troubleshooting
 
 - **Registration fails with a direct request**: use **Search by broadcast**, and
@@ -574,6 +586,30 @@ the browser's answer is installed in non-trickle signaling and are harmless;
 they are hidden at the default log level.
 
 Set `RUST_LOG=debug` (or `RUST_LOG=chiaki_core=debug`) for protocol-level logs.
+
+## Roadmap
+
+GameBridge currently supports PS4 and PS5. The long-term goal is one
+self-hosted browser bridge for multiple game sources, not a PlayStation-only
+tool.
+
+- **Now — PlayStation:** PS4/PS5 registration, session negotiation, H.264/H.265
+  (including HDR where supported), Opus audio, FEC, input, auto-wake, and
+  cross-session adaptive bitrate.
+- **Next — Xbox:** investigate Xbox remote/console streaming and add support
+  when the protocol, platform terms, and hardware testing allow. Xbox is not
+  implemented yet.
+- **Planned — Steam/PC:** add a Steam/PC streaming source so the same browser
+  client can play games running on a local PC.
+- **Exploring — Nintendo:** evaluate Nintendo console streaming where feasible;
+  no support is committed.
+- **Platform work:** multi-source console management, per-source capability
+  detection, multi-user/session isolation, TLS/reverse-proxy deployment, and
+  signed installers.
+
+These are directions, not delivery dates. Support depends on protocol access,
+platform terms, hardware testing, and maintainer time. GameBridge is unofficial
+and is not affiliated with Sony, Microsoft, Nintendo, or Valve.
 
 ## Licensing
 

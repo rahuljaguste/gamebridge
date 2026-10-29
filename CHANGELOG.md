@@ -3,6 +3,16 @@
 All notable changes to GameBridge are documented here. The project follows
 semantic versioning; it is a Chiaki derivative and remains AGPL-3.0-only.
 
+## [0.8.7] - 2026-10-28
+
+### Added
+
+- `--demo` streams a built-in H.264 test pattern with no console, ffmpeg, or
+  external file, so the first run can verify the browser/WebRTC path in one
+  command. `--demo-file` still accepts a custom clip.
+- A Quick start section at the top of the README leads with the demo and then
+  walks through console pairing.
+
 ## [0.8.6] - 2026-10-23
 
 ### Added

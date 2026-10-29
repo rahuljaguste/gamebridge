@@ -24,6 +24,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 use crate::config::ConfigStore;
+use crate::demo::DemoSource;
 use crate::routes::auth::Auth;
 use crate::state::AppState;
 
@@ -60,6 +61,10 @@ struct Args {
     /// Override the configuration directory.
     #[arg(long)]
     config_dir: Option<PathBuf>,
+
+    /// Stream a built-in test pattern with no console and no demo file.
+    #[arg(long, conflicts_with = "demo_file")]
+    demo: bool,
 
     /// Enable demo mode with a local Annex-B H.264 file (no console needed).
     #[arg(long)]
@@ -191,7 +196,12 @@ async fn main() -> Result<()> {
             );
         }
     }
-    let state = AppState::new(store, args.demo_file.clone());
+    let demo = if args.demo {
+        Some(DemoSource::Embedded)
+    } else {
+        args.demo_file.clone().map(DemoSource::File)
+    };
+    let state = AppState::new(store, demo);
     let shutdown_state = state.clone();
     let app = routes::router(state, args.bind, args.allow_remote, auth);
 

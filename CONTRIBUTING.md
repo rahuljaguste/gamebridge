@@ -28,8 +28,8 @@ cargo test --workspace
 python3 tools/gen_licenses.py --check
 ```
 
-Run the bridge with `cargo run -p gamebridge-server -- --demo-file demo.h264` to test
-the browser path without a console. Tests must not require a real PSN account,
+Run the bridge with `cargo run -p gamebridge-server -- --demo` to test the
+browser path without a console. Tests must not require a real PSN account,
 console, or network access.
 
 Do not commit `hosts.json`, auth tokens, `server.log`, console captures, or

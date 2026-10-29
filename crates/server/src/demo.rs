@@ -25,6 +25,19 @@ use crate::routes::api::{ApiError, RtcDescription, StartResponse};
 use crate::state::{ActiveSession, AppState, ServerEvent};
 use crate::webrtc::{self, MediaShared};
 
+/// A short synthetic test pattern compiled into the binary so `--demo` needs
+/// no console, no ffmpeg, and no external file.
+const EMBEDDED_DEMO: &[u8] = include_bytes!("../assets/demo.h264");
+
+/// Where the demo stream comes from.
+#[derive(Clone, Debug)]
+pub enum DemoSource {
+    /// The built-in test pattern.
+    Embedded,
+    /// A user-supplied Annex-B H.264 file.
+    File(PathBuf),
+}
+
 pub async fn start(
     State(state): State<Arc<AppState>>,
 ) -> std::result::Result<Json<StartResponse>, ApiError> {
@@ -32,14 +45,16 @@ pub async fn start(
         .reserve_session_start()
         .await
         .ok_or_else(|| ApiError::conflict("a session is already active"))?;
-    let path: PathBuf = state
-        .demo_file
-        .clone()
-        .ok_or_else(|| ApiError::bad_request("demo mode was not enabled"))?;
-    let data = tokio::fs::read(&path)
-        .await
-        .with_context(|| format!("failed to read {}", path.display()))
-        .map_err(|e| ApiError::internal(e.to_string()))?;
+    let data = match state.demo.as_ref() {
+        Some(DemoSource::Embedded) => std::borrow::Cow::Borrowed(EMBEDDED_DEMO),
+        Some(DemoSource::File(path)) => std::borrow::Cow::Owned(
+            tokio::fs::read(path)
+                .await
+                .with_context(|| format!("failed to read {}", path.display()))
+                .map_err(|e| ApiError::internal(e.to_string()))?,
+        ),
+        None => return Err(ApiError::bad_request("demo mode was not enabled")),
+    };
     let access_units = split_access_units(&data);
     if access_units.is_empty() {
         return Err(ApiError::bad_request("demo file has no H.264 access units"));
@@ -308,5 +323,18 @@ mod tests {
 
         // Files without an Annex-B start code are rejected.
         assert!(split_access_units(b"not an annex-b stream").is_empty());
+    }
+
+    #[test]
+    fn embedded_demo_is_a_valid_h264_stream() {
+        let units = split_access_units(EMBEDDED_DEMO);
+        assert!(!units.is_empty());
+        let first = scan_annex_b(&units[0], Codec::H264);
+        assert!(first.has_sps && first.has_pps && first.is_idr);
+        assert!(
+            units
+                .iter()
+                .any(|unit| scan_annex_b(unit, Codec::H264).is_idr)
+        );
     }
 }
