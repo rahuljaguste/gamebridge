@@ -130,9 +130,13 @@ limitations are under [Limitations](#limitations).
 
 ## Screenshots
 
-| Home screen | Demo stream |
+| Home screen | In-game |
 | --- | --- |
-| ![GameBridge home screen with the Add console tile and Start demo stream](docs/screenshot-home.png) | ![GameBridge streaming the built-in demo test pattern with the player HUD](docs/screenshot-demo.png) |
+| ![GameBridge home screen with a paired PS5](docs/screenshot-home.jpg) | ![Cyberpunk 2077 running on a PS5 and streamed in the browser with the GameBridge stats HUD](docs/screenshot-ingame.jpg) |
+
+![GameBridge Settings with the Stream tab open over a live stream](docs/screenshot-settings.jpg)
+
+Game imagery is from *Cyberpunk 2077*, © CD Projekt Red; shown for illustration.
 
 ## Requirements
 
