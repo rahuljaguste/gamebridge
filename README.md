@@ -644,7 +644,7 @@ they are hidden at the default log level.
 
 Set `RUST_LOG=debug` (or `RUST_LOG=chiaki_core=debug`) for protocol-level logs.
 
-Still stuck? Ask in the [GameBridge Discord](https://discord.gg/SpfCCFnh8) and
+Still stuck? Ask in the [GameBridge Discord](https://discord.gg/HXdEGCEZpx) and
 include your GameBridge version, platform, and redacted logs.
 
 ## Roadmap
@@ -674,7 +674,7 @@ and is not affiliated with Sony, Microsoft, Nintendo, or Valve.
 ## Community
 
 Setup questions and troubleshooting: join the
-[GameBridge Discord](https://discord.gg/SpfCCFnh8). Please use GitHub issues for
+[GameBridge Discord](https://discord.gg/HXdEGCEZpx). Please use GitHub issues for
 reproducible bugs and feature requests, and report security problems through the
 private advisory flow described in [SECURITY.md](SECURITY.md) — never in a public
 channel.
