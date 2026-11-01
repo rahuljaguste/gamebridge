@@ -644,6 +644,9 @@ they are hidden at the default log level.
 
 Set `RUST_LOG=debug` (or `RUST_LOG=chiaki_core=debug`) for protocol-level logs.
 
+Still stuck? Ask in the [GameBridge Discord](https://discord.gg/SpfCCFnh8) and
+include your GameBridge version, platform, and redacted logs.
+
 ## Roadmap
 
 GameBridge currently supports PS4 and PS5. The long-term goal is one
@@ -667,6 +670,14 @@ tool.
 These are directions, not delivery dates. Support depends on protocol access,
 platform terms, hardware testing, and maintainer time. GameBridge is unofficial
 and is not affiliated with Sony, Microsoft, Nintendo, or Valve.
+
+## Community
+
+Setup questions and troubleshooting: join the
+[GameBridge Discord](https://discord.gg/SpfCCFnh8). Please use GitHub issues for
+reproducible bugs and feature requests, and report security problems through the
+private advisory flow described in [SECURITY.md](SECURITY.md) — never in a public
+channel.
 
 ## Licensing
 
