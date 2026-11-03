@@ -26,7 +26,7 @@ webrtc = "=0.21.1"
 rtc = "=0.21.1"
 if-addrs = "0.15"
 futures-util = "0.3"
-rand = "0.8"
+rand = "0.10"
 dirs = "6"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 url = "2"
